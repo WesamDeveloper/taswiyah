@@ -27,9 +27,22 @@ class DashboardScreen extends StatelessWidget {
           style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold),
         ),
         actions: [
-          const CircleAvatar(
-            backgroundColor: AppTheme.primaryColor,
-            child: Icon(Icons.person, color: Colors.white),
+          InkWell(
+            onTap: () => Get.to(() => const ProfileScreen()),
+            child: Obx(() {
+              IconData iconData = Icons.person;
+              switch (controller.avatarIcon.value) {
+                case 'store': iconData = Icons.store; break;
+                case 'business': iconData = Icons.business; break;
+                case 'account_circle': iconData = Icons.account_circle; break;
+                case 'face': iconData = Icons.face; break;
+                case 'shopping_bag': iconData = Icons.shopping_bag; break;
+              }
+              return CircleAvatar(
+                backgroundColor: AppTheme.primaryColor,
+                child: Icon(iconData, color: Colors.white),
+              );
+            }),
           ),
           const SizedBox(width: 16),
         ],

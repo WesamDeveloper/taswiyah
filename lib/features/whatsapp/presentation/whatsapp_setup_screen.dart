@@ -19,6 +19,16 @@ class WhatsappSetupScreen extends StatelessWidget {
         backgroundColor: AppTheme.surfaceLight,
         elevation: 0,
         iconTheme: const IconThemeData(color: Colors.black87),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: AppTheme.primaryColor),
+            tooltip: 'إعادة ضبط الجلسة (إصلاح الأعطال)',
+            onPressed: () {
+              controller.resetSession();
+              Get.snackbar('تحديث', 'جاري إعادة ضبط خادم الواتساب وتوليد جلسة جديدة...', backgroundColor: Colors.orange, colorText: Colors.white);
+            },
+          ),
+        ],
       ),
       body: Center(
         child: Obx(() {

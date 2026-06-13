@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/network/endpoints.dart';
+import '../../../core/network/sync_service.dart';
+import '../../../core/database/local_db_service.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import '../presentation/activation_screen.dart';
 
@@ -20,6 +22,11 @@ class AuthController extends GetxController {
   var isLoading = false.obs;
   var isRegisterLoading = false.obs;
   var errorMessage = ''.obs;
+  var isPasswordHidden = true.obs;
+
+  void togglePasswordVisibility() {
+    isPasswordHidden.value = !isPasswordHidden.value;
+  }
 
   Future<void> login() async {
     if (emailController.text.isEmpty || passwordController.text.isEmpty) {
@@ -54,6 +61,13 @@ class AuthController extends GetxController {
         await prefs.setBool('is_activated', isActivated);
 
         if (isActivated) {
+          // Perform full initial sync before routing to dashboard
+          if (Get.isRegistered<SyncService>()) {
+            await Get.find<SyncService>().performInitialSync();
+          } else {
+            final syncService = Get.put(SyncService());
+            await syncService.performInitialSync();
+          }
           Get.offAll(() => DashboardScreen());
         } else {
           Get.offAll(() => ActivationScreen());
@@ -167,6 +181,16 @@ class AuthController extends GetxController {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('access_token');
     await prefs.remove('is_activated');
+    try {
+      final dbService = LocalDbService.instance;
+      final db = await dbService.database;
+      await db.delete('customers');
+      await db.delete('debts');
+      await db.delete('payments');
+      await db.delete('sync_queue');
+    } catch (e) {
+      // ignore
+    }
   }
 
   Future<void> activateAccount(String code) async {
@@ -195,6 +219,14 @@ class AuthController extends GetxController {
           backgroundColor: Colors.green,
           colorText: Colors.white,
         );
+        
+        if (Get.isRegistered<SyncService>()) {
+          await Get.find<SyncService>().performInitialSync();
+        } else {
+          final syncService = Get.put(SyncService());
+          await syncService.performInitialSync();
+        }
+        
         Get.offAll(() => DashboardScreen());
       }
     } on DioException catch (e) {
@@ -246,4 +278,28 @@ class AuthController extends GetxController {
       );
     }
   }
+
+  Future<bool> forgotPassword(String email) async {
+    if (email.isEmpty) {
+      Get.snackbar('تنبيه', 'يرجى إدخال البريد الإلكتروني', backgroundColor: Colors.orange, colorText: Colors.white);
+      return false;
+    }
+    
+    isLoading.value = true;
+    errorMessage.value = '';
+    try {
+      final response = await _apiClient.post('/auth/forgot-password', {}, data: {'email': email});
+      if (response.statusCode == 200) {
+        Get.snackbar('نجاح', response.data['message'], backgroundColor: Colors.green, colorText: Colors.white);
+        return true;
+      }
+    } on DioException catch (e) {
+      errorMessage.value = e.response?.data['message'] ?? 'فشل طلب الاستعادة';
+      Get.snackbar('خطأ', errorMessage.value, backgroundColor: Colors.red, colorText: Colors.white);
+    } finally {
+      isLoading.value = false;
+    }
+    return false;
+  }
+
 }

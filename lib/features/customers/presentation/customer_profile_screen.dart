@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/export_dialog.dart';
 import '../controllers/customer_profile_controller.dart';
+import '../controllers/customers_controller.dart';
 
 class CustomerProfileScreen extends StatelessWidget {
   final int customerId;
@@ -35,6 +36,11 @@ class CustomerProfileScreen extends StatelessWidget {
             onPressed: () => _showEditCustomerDialog(context, controller),
           ),
           IconButton(
+            icon: const Icon(Icons.delete, color: Colors.red),
+            tooltip: 'حذف العميل',
+            onPressed: () => _showDeleteConfirmation(context, customerId),
+          ),
+          IconButton(
             icon: const Icon(Icons.schedule, color: Colors.blue),
             tooltip: 'جدولة الرسائل',
             onPressed: () => _showScheduleDialog(context, controller),
@@ -62,15 +68,24 @@ class CustomerProfileScreen extends StatelessWidget {
         }
 
         final customer = controller.customer;
-        final debts = controller.debts;
+        final transactions = controller.transactions;
 
         double totalDebt = 0;
         double totalPaid = 0;
-        for (var d in debts) {
-          totalDebt += double.parse(d['amount'].toString());
-          totalPaid += double.parse(d['paid'].toString());
+
+        // Calculate totalDebt and totalPaid strictly from the transactions ledger for display
+        for (var tx in transactions) {
+          if (tx['tx_type'] == 'debt') {
+            totalDebt += double.parse((tx['amount'] ?? 0).toString());
+          } else if (tx['tx_type'] == 'payment') {
+            totalPaid += double.parse((tx['amount'] ?? 0).toString());
+          }
         }
-        final remaining = totalDebt - totalPaid;
+
+        // Use the remaining balance directly from the customer object as it is fully synchronized
+        final remaining = double.parse(
+          (customer['remaining_balance'] ?? 0).toString(),
+        );
 
         return SingleChildScrollView(
           padding: const EdgeInsets.all(16),
@@ -220,7 +235,7 @@ class CustomerProfileScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
 
-              if (debts.isEmpty)
+              if (transactions.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(32),
                   child: Text('لا توجد عمليات مسجلة.'),
@@ -229,34 +244,54 @@ class CustomerProfileScreen extends StatelessWidget {
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  itemCount: debts.length,
+                  itemCount: transactions.length,
                   itemBuilder: (context, index) {
-                    final debt = debts[index];
-                    final isPaid = debt['status'] == 'paid';
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: Icon(
-                          isPaid ? Icons.check_circle : Icons.warning_amber,
-                          color: isPaid
-                              ? AppTheme.secondaryColor
-                              : AppTheme.danger,
-                        ),
-                        title: Text('سلفة ${debt['amount']} ر.ي'),
-                        subtitle: Text(
-                          debt['created_at'].toString().substring(0, 10),
-                        ),
-                        trailing: Text(
-                          isPaid
-                              ? 'مسددة'
-                              : 'متبقي ${double.parse(debt['amount'].toString()) - double.parse(debt['paid'].toString())}',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: isPaid ? Colors.green : Colors.red,
+                    final tx = transactions[index];
+                    final isPayment = tx['tx_type'] == 'payment';
+
+                    if (isPayment) {
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: const Icon(
+                            Icons.arrow_downward,
+                            color: Colors.green,
+                          ),
+                          title: Text('تحصيل مبلغ ${tx['amount']} ر.ي'),
+                          subtitle: Text(
+                            tx['created_at'].toString().substring(0, 10),
+                          ),
+                          trailing: const Text(
+                            'دفعة',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
                           ),
                         ),
-                      ),
-                    );
+                      );
+                    } else {
+                      final isPaid = tx['status'] == 'paid';
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: Icon(Icons.arrow_upward, color: Colors.red),
+                          title: Text('سلفة ${tx['amount']} ر.ي'),
+                          subtitle: Text(
+                            tx['created_at'].toString().substring(0, 10),
+                          ),
+                          trailing: Text(
+                            isPaid
+                                ? 'مسددة'
+                                : 'متبقي ${double.parse(tx['amount'].toString()) - double.parse(tx['paid'].toString())}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: isPaid ? Colors.green : Colors.red,
+                            ),
+                          ),
+                        ),
+                      );
+                    }
                   },
                 ),
             ],
@@ -558,6 +593,35 @@ class CustomerProfileScreen extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+
+  void _showDeleteConfirmation(BuildContext context, int customerId) {
+    Get.dialog(
+      AlertDialog(
+        title: const Text('حذف العميل', style: TextStyle(color: Colors.red)),
+        content: const Text(
+          'هل أنت متأكد من رغبتك في حذف هذا العميل وجميع ديونه ومدفوعاته؟\n\nلا يمكن التراجع عن هذا الإجراء.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('إلغاء', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Get.back(); // close dialog
+              Get.back(); // close profile screen
+              Get.find<CustomersController>().deleteCustomer(customerId);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text(
+              'حذف نهائي',
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
       ),
     );
   }

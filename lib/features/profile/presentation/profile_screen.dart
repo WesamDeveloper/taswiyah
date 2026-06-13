@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import 'package:url_launcher/url_launcher.dart';
+
 import '../../../core/services/export_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/export_dialog.dart';
 import '../../auth/controllers/auth_controller.dart';
 import '../../whatsapp/presentation/whatsapp_setup_screen.dart';
+import 'edit_profile_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({Key? key}) : super(key: key);
@@ -40,6 +43,22 @@ class ProfileScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 32),
+
+          Card(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.person, color: Colors.purple),
+              title: const Text('تعديل الملف الشخصي'),
+              subtitle: const Text('تغيير الاسم، كلمة المرور، ورقم الاستعادة'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                Get.to(() => const EditProfileScreen());
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
 
           Card(
             shape: RoundedRectangleBorder(
@@ -108,6 +127,25 @@ class ProfileScreen extends StatelessWidget {
                     },
                   ),
                 );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.support_agent, color: Colors.teal),
+              title: const Text('التواصل مع الدعم الفني'),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () async {
+                final uri = Uri.parse('whatsapp://send?phone=+967775904988');
+                if (await canLaunchUrl(uri)) {
+                  await launchUrl(uri);
+                } else {
+                  Get.snackbar('خطأ', 'تطبيق واتساب غير مثبت على جهازك.');
+                }
               },
             ),
           ),

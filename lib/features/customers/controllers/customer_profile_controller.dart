@@ -6,6 +6,7 @@ import '../../../core/database/local_db_service.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/network/sync_service.dart';
 import '../../../core/services/export_service.dart';
+import '../../dashboard/controllers/dashboard_controller.dart';
 import '../../debts/controllers/debts_controller.dart';
 import '../controllers/customers_controller.dart';
 
@@ -18,7 +19,7 @@ class CustomerProfileController extends GetxController {
   var isLoading = true.obs;
   var customer = {}.obs;
   var debts = [].obs;
-
+  var transactions = [].obs;
   CustomerProfileController(this.customerId);
 
   @override
@@ -35,35 +36,42 @@ class CustomerProfileController extends GetxController {
         customer.value = localCust;
       }
       final localDebts = await _dbService.getCustomerDebts(customerId);
-      if (localDebts.isNotEmpty) {
-        debts.value = localDebts;
-      }
+      final localPayments = await _dbService.getCustomerPayments(customerId);
 
-      if (_syncService.isOnline.value) {
-        final response = await _apiClient.get('/customers/$customerId');
-        if (response.statusCode == 200) {
-          customer.value = response.data['data'];
-          debts.value = response.data['data']['debts'] ?? [];
-
-          await _dbService.saveCustomer(
-            Map<String, dynamic>.from(customer.value),
-          );
-          await _dbService.clearSyncedCustomerDebts(customerId);
-          for (var d in debts) {
-            await _dbService.saveDebt(Map<String, dynamic>.from(d));
-          }
-        }
-      }
+      _updateTransactionsList(localDebts, localPayments);
     } catch (e) {
-      if (customer.isEmpty) {
-        Get.snackbar(
-          'تنبيه',
-          'لا يوجد اتصال بالإنترنت ولا بيانات محلية للعميل',
-        );
-      }
+      Get.snackbar('خطأ', 'فشل تحميل بيانات العميل');
     } finally {
       isLoading.value = false;
     }
+  }
+
+  void _updateTransactionsList(
+    List<Map<String, dynamic>> dList,
+    List<Map<String, dynamic>> pList,
+  ) {
+    debts.value =
+        dList; // Keep debts for legacy logic if needed (like FIFO payments)
+
+    List combined = [];
+    for (var d in dList) {
+      final map = Map<String, dynamic>.from(d);
+      map['tx_type'] = 'debt';
+      combined.add(map);
+    }
+    for (var p in pList) {
+      final map = Map<String, dynamic>.from(p);
+      map['tx_type'] = 'payment';
+      combined.add(map);
+    }
+
+    combined.sort((a, b) {
+      String dateA = a['created_at'] ?? '';
+      String dateB = b['created_at'] ?? '';
+      return dateB.compareTo(dateA); // DESC
+    });
+
+    transactions.value = combined;
   }
 
   Future<void> addDebt(double amount, String notes) async {
@@ -94,25 +102,17 @@ class CustomerProfileController extends GetxController {
 
     fetchProfile();
 
-    bool success = await _syncService.executeOrQueue(
-      'add_debt',
-      payload,
-      onlineAction: () async {
-        final response = await _apiClient.post('/debts', {}, data: payload);
-        if (response.statusCode == 201 || response.statusCode == 200) {
-          final newDebt = response.data['data'];
-          await _dbService.deleteDebtByRemoteId(tempId);
-          await _dbService.saveDebt(Map<String, dynamic>.from(newDebt));
-          fetchProfile();
-          if (Get.isRegistered<CustomersController>())
-            Get.find<CustomersController>().fetchCustomers();
-          if (Get.isRegistered<DebtsController>())
-            Get.find<DebtsController>().fetchDebts();
-        } else {
-          throw Exception('Failed');
-        }
-      },
-    );
+    if (Get.isRegistered<CustomersController>()) {
+      Get.find<CustomersController>().fetchCustomers();
+    }
+    if (Get.isRegistered<DebtsController>()) {
+      Get.find<DebtsController>().fetchDebts();
+    }
+    if (Get.isRegistered<DashboardController>()) {
+      Get.find<DashboardController>().fetchStats();
+    }
+
+    bool success = await _syncService.executeOrQueue('add_debt', payload);
 
     if (success) {
       Get.snackbar(
@@ -125,34 +125,70 @@ class CustomerProfileController extends GetxController {
   }
 
   Future<void> receivePayment(double amount) async {
-    final payload = {'amount': amount, 'customer_id': customerId};
+    final tempPaymentId = DateTime.now().millisecondsSinceEpoch;
+    final payload = {'amount': amount, 'customer_id': customerId, 'temp_id': tempPaymentId};
 
     // Update local remaining balance
     final cust = Map<String, dynamic>.from(customer.value);
     cust['remaining_balance'] = (cust['remaining_balance'] ?? 0) - amount;
     await _dbService.saveCustomer(cust);
+
+    // Update local debts to reflect payment (FIFO)
+    double remainingPayment = amount;
+    final localDebts = List<Map<String, dynamic>>.from(await _dbService.getCustomerDebts(customerId));
+    // Sort debts ascending by created_at to pay oldest first
+    localDebts.sort(
+      (a, b) => (a['created_at'] ?? '').compareTo(b['created_at'] ?? ''),
+    );
+
+    for (var debt in localDebts) {
+      if (remainingPayment <= 0) break;
+
+      final mutableDebt = Map<String, dynamic>.from(debt);
+      double debtAmount = double.parse((mutableDebt['amount'] ?? 0).toString());
+      double debtPaid = double.parse((mutableDebt['paid'] ?? 0).toString());
+      double debtRemaining = debtAmount - debtPaid;
+
+      if (debtRemaining > 0) {
+        double amountToApply = remainingPayment >= debtRemaining
+            ? debtRemaining
+            : remainingPayment;
+        mutableDebt['paid'] = debtPaid + amountToApply;
+        if (mutableDebt['paid'] >= debtAmount) {
+          mutableDebt['status'] = 'paid';
+        } else {
+          mutableDebt['status'] = 'partially_paid';
+        }
+        await _dbService.saveDebt(
+          mutableDebt,
+          isSynced: false,
+        ); // save updated debt
+        remainingPayment -= amountToApply;
+      }
+    }
+
+    // Save local payment record to make it visible in history
+    final localPayment = {
+      'id': tempPaymentId,
+      'customer_id': customerId,
+      'amount': amount,
+      'created_at': DateTime.now().toIso8601String(),
+    };
+    await _dbService.savePayment(localPayment, isSynced: false);
+
     fetchProfile();
 
-    bool success = await _syncService.executeOrQueue(
-      'add_payment',
-      payload,
-      onlineAction: () async {
-        final response = await _apiClient.post(
-          '/customers/$customerId/pay',
-          {},
-          data: {'amount': amount},
-        );
-        if (response.statusCode == 200) {
-          fetchProfile();
-          if (Get.isRegistered<CustomersController>())
-            Get.find<CustomersController>().fetchCustomers();
-          if (Get.isRegistered<DebtsController>())
-            Get.find<DebtsController>().fetchDebts();
-        } else {
-          throw Exception('Failed');
-        }
-      },
-    );
+    if (Get.isRegistered<CustomersController>()) {
+      Get.find<CustomersController>().fetchCustomers();
+    }
+    if (Get.isRegistered<DebtsController>()) {
+      Get.find<DebtsController>().fetchDebts();
+    }
+    if (Get.isRegistered<DashboardController>()) {
+      Get.find<DashboardController>().fetchStats();
+    }
+
+    bool success = await _syncService.executeOrQueue('add_payment', payload);
 
     if (success) {
       Get.snackbar(
@@ -175,32 +211,41 @@ class CustomerProfileController extends GetxController {
       return;
     }
     try {
-      final response = await _apiClient.post(
-        '/customers/$customerId/remind',
-        {},
+      // Pass the locally calculated exact remaining balance to the backend
+      // This ensures the reminder is accurate even if there are unsynced transactions
+      final currentCustomer = customer.value;
+      final remaining = double.parse(
+        (currentCustomer['remaining_balance'] ?? 0).toString(),
       );
+      final phone = currentCustomer['primary_phone'];
+      final name = currentCustomer['name'];
+
+      final response = await _apiClient.post('/customers/$customerId/remind', {
+        'remaining': remaining,
+        'phone': phone,
+        'name': name,
+      });
       if (response.statusCode == 200) {
         Get.snackbar(
           'نجاح',
-          'تم إرسال التذكير للعميل عبر الواتساب بنجاح',
+          'تم إرسال التذكير بنجاح عبر الواتساب',
           backgroundColor: Colors.green,
           colorText: Colors.white,
         );
       }
-    } on DioException catch (e) {
-      Get.snackbar(
-        'خطأ',
-        e.response?.data['message'] ?? 'فشل الإرسال',
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
     } catch (e) {
+      String errorMessage =
+          'فشل إرسال التذكير عبر الواتساب. تأكد من ربط الحساب برقم صحيح.';
+      if (e is DioException && e.response?.data != null) {
+        errorMessage = e.response?.data['message'] ?? errorMessage;
+      }
       Get.snackbar(
         'خطأ',
-        'فشل الإرسال',
+        errorMessage,
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
+      print("${errorMessage} $e");
     }
   }
 
@@ -217,20 +262,6 @@ class CustomerProfileController extends GetxController {
     bool success = await _syncService.executeOrQueue(
       'update_customer',
       payload,
-      onlineAction: () async {
-        final response = await _apiClient.put(
-          '/customers/$customerId',
-          data: {'name': name, 'primary_phone': phone},
-        );
-        if (response.statusCode == 200) {
-          fetchProfile();
-          if (Get.isRegistered<CustomersController>()) {
-            Get.find<CustomersController>().fetchCustomers();
-          }
-        } else {
-          throw Exception('Failed');
-        }
-      },
     );
 
     if (success) {
@@ -288,7 +319,10 @@ class CustomerProfileController extends GetxController {
         data: {'notify_on_debt': value},
       );
       if (response.statusCode == 200) {
-        fetchProfile();
+        final cust = Map<String, dynamic>.from(customer.value);
+        cust['notify_on_debt'] = value ? 1 : 0;
+        await _dbService.saveCustomer(cust);
+        customer.value = cust;
       }
     } on DioException catch (e) {
       Get.snackbar(
@@ -296,6 +330,9 @@ class CustomerProfileController extends GetxController {
         'فشل الحفظ: ${e.response?.data['message'] ?? e.response?.data}',
         backgroundColor: Colors.red,
         colorText: Colors.white,
+      );
+      print(
+        "$e الرساله المدققه ${e.response?.data['message'] ?? e.response?.data}",
       );
     } catch (e) {
       Get.snackbar(

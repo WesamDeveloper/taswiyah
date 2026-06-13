@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:get/get.dart';
 
+import 'package:url_launcher/url_launcher.dart';
+
 import '../../../core/theme/app_theme.dart';
 import '../controllers/auth_controller.dart';
 import 'register_screen.dart';
+import 'forgot_password_screen.dart';
 
 class LoginScreen extends StatelessWidget {
   LoginScreen({Key? key}) : super(key: key);
@@ -66,17 +69,33 @@ class LoginScreen extends StatelessWidget {
                 const SizedBox(height: 16),
 
                 // Password Input
-                TextField(
+                Obx(() => TextField(
                   controller: _authController.passwordController,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'كلمة المرور',
-                    prefixIcon: Icon(Icons.lock_outline),
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _authController.isPasswordHidden.value 
+                          ? Icons.visibility_off 
+                          : Icons.visibility,
+                      ),
+                      onPressed: () => _authController.togglePasswordVisibility(),
+                    ),
                   ),
-                  obscureText: true,
+                  obscureText: _authController.isPasswordHidden.value,
                   textDirection: TextDirection.ltr,
-                ).animate().fade(delay: 700.ms).slideX(begin: 0.1, end: 0),
+                )).animate().fade(delay: 700.ms).slideX(begin: 0.1, end: 0),
 
-                const SizedBox(height: 32),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: () => Get.to(() => ForgotPasswordScreen()),
+                    child: Text('نسيت كلمة المرور؟', style: TextStyle(color: Colors.grey.shade700)),
+                  ),
+                ).animate().fade(delay: 750.ms),
+
+                const SizedBox(height: 16),
 
                 // Login Button
                 Obx(
@@ -109,6 +128,24 @@ class LoginScreen extends StatelessWidget {
                     ),
                   ),
                 ).animate().fade(delay: 900.ms),
+                
+                const SizedBox(height: 16),
+                
+                TextButton.icon(
+                  onPressed: () async {
+                    final uri = Uri.parse('whatsapp://send?phone=+967775904988');
+                    if (await canLaunchUrl(uri)) {
+                      await launchUrl(uri);
+                    } else {
+                      Get.snackbar('خطأ', 'تطبيق واتساب غير مثبت على جهازك.');
+                    }
+                  },
+                  icon: const Icon(Icons.support_agent, color: Colors.green),
+                  label: const Text(
+                    'التواصل مع خدمة العملاء',
+                    style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                  ),
+                ).animate().fade(delay: 1000.ms),
               ],
             ),
           ),

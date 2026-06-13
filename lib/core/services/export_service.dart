@@ -21,41 +21,82 @@ class ExportService {
     required DateTime? endDate,
   }) async {
     final debts = await _dbService.getCustomerDebts(customerId);
+    final payments = await _dbService.getCustomerPayments(customerId);
+
+    List transactions = [];
+    for (var d in debts) {
+      final map = Map<String, dynamic>.from(d);
+      map['tx_type'] = 'debt';
+      transactions.add(map);
+    }
+    for (var p in payments) {
+      final map = Map<String, dynamic>.from(p);
+      map['tx_type'] = 'payment';
+      transactions.add(map);
+    }
+
+    // Sort ascending for ledger
+    transactions.sort((a, b) {
+      String dateA = a['created_at'] ?? '';
+      String dateB = b['created_at'] ?? '';
+      return dateA.compareTo(dateB);
+    });
 
     // Filter by date
-    final filteredDebts = debts.where((d) {
-      if (d['created_at'] == null) return true;
-      final date = DateTime.tryParse(d['created_at']);
+    final filteredTx = transactions.where((t) {
+      if (t['created_at'] == null) return true;
+      final date = DateTime.tryParse(t['created_at']);
       if (date == null) return true;
 
       if (startDate != null && date.isBefore(startDate)) return false;
-      if (endDate != null && date.isAfter(endDate.add(const Duration(days: 1))))
-        return false;
+      if (endDate != null && date.isAfter(endDate.add(const Duration(days: 1)))) return false;
       return true;
     }).toList();
+
+    // Calculate overall totals
+    double overallDebts = 0;
+    double overallPaid = 0;
+    for (var tx in transactions) {
+      final amt = double.parse((tx['amount'] ?? 0).toString());
+      if (tx['tx_type'] == 'debt') {
+        overallDebts += amt;
+      } else if (tx['tx_type'] == 'payment') {
+        overallPaid += amt;
+      }
+    }
+    double overallRemaining = overallDebts - overallPaid;
 
     if (format == 'pdf') {
       await _generateCustomerPDF(
         customerName,
-        filteredDebts,
+        filteredTx.cast<Map<String, dynamic>>(),
         startDate,
         endDate,
+        overallDebts,
+        overallPaid,
+        overallRemaining,
       );
-    } else {
+    } else if (format == 'excel') {
       await _generateCustomerExcel(
         customerName,
-        filteredDebts,
+        filteredTx.cast<Map<String, dynamic>>(),
         startDate,
         endDate,
+        overallDebts,
+        overallPaid,
+        overallRemaining,
       );
     }
   }
 
   Future<void> _generateCustomerPDF(
     String customerName,
-    List<Map<String, dynamic>> debts,
+    List<Map<String, dynamic>> transactions,
     DateTime? start,
     DateTime? end,
+    double overallDebts,
+    double overallPaid,
+    double overallRemaining,
   ) async {
     final pdf = pw.Document();
 
@@ -65,15 +106,6 @@ class ExportService {
     
     final font = pw.Font.ttf(fontData);
     final fontBold = pw.Font.ttf(fontBoldData);
-
-    // Calculate totals
-    double totalDebts = 0;
-    double totalPaid = 0;
-    for (var d in debts) {
-      totalDebts += d['amount'] ?? 0;
-      totalPaid += d['paid'] ?? 0;
-    }
-    double remaining = totalDebts - totalPaid;
 
     String periodText = 'الفترة: ';
     if (start == null && end == null) {
@@ -92,9 +124,9 @@ class ExportService {
         footer: (context) => _buildPdfFooter(context),
         build: (context) => [
           pw.SizedBox(height: 20),
-          _buildPdfTable(debts, font, fontBold),
+          _buildPdfTable(transactions, font, fontBold),
           pw.SizedBox(height: 30),
-          _buildPdfSummary(totalDebts, totalPaid, remaining, fontBold),
+          _buildPdfSummary(overallDebts, overallPaid, overallRemaining, fontBold),
         ],
       ),
     );
@@ -110,9 +142,12 @@ class ExportService {
 
   Future<void> _generateCustomerExcel(
     String customerName,
-    List<Map<String, dynamic>> debts,
+    List<Map<String, dynamic>> transactions,
     DateTime? start,
     DateTime? end,
+    double overallDebts,
+    double overallPaid,
+    double overallRemaining,
   ) async {
     var excel = Excel.createExcel();
     Sheet sheetObject = excel['Sheet1'];
@@ -122,35 +157,24 @@ class ExportService {
     sheetObject.appendRow([
       TextCellValue('التاريخ'),
       TextCellValue('البيان/الملاحظات'),
-      TextCellValue('مبلغ الدين'),
-      TextCellValue('المدفوع'),
-      TextCellValue('الحالة'),
+      TextCellValue('نوع العملية'),
+      TextCellValue('المبلغ'),
     ]);
 
-    // Data
-    double totalDebts = 0;
-    double totalPaid = 0;
-
-    for (var d in debts) {
-      final date = d['created_at'] != null
-          ? d['created_at'].toString().split('T')[0]
+    for (var tx in transactions) {
+      final date = tx['created_at'] != null
+          ? tx['created_at'].toString().split('T')[0]
           : '';
-      final notes = d['notes'] ?? 'سلفة';
-      final amount = d['amount'] ?? 0.0;
-      final paid = d['paid'] ?? 0.0;
-      final status = (d['status'] == 'paid')
-          ? 'مدفوع'
-          : ((d['status'] == 'partial') ? 'مدفوع جزئياً' : 'غير مدفوع');
-
-      totalDebts += amount;
-      totalPaid += paid;
+      final notes = tx['notes'] ?? '';
+      final amount = double.parse((tx['amount'] ?? 0).toString());
+      final isDebt = tx['tx_type'] == 'debt';
+      final typeText = isDebt ? 'سلفة' : 'تحصيل';
 
       sheetObject.appendRow([
         TextCellValue(date),
-        TextCellValue(notes),
+        TextCellValue(isDebt ? notes : 'دفعة من الحساب'),
+        TextCellValue(typeText),
         DoubleCellValue(amount.toDouble()),
-        DoubleCellValue(paid.toDouble()),
-        TextCellValue(status),
       ]);
     }
 
@@ -163,11 +187,11 @@ class ExportService {
       TextCellValue(''),
     ]);
     sheetObject.appendRow([
-      TextCellValue('الإجمالي'),
+      TextCellValue('الإجمالي الكلي للعميل'),
       TextCellValue(''),
-      DoubleCellValue(totalDebts),
-      DoubleCellValue(totalPaid),
-      TextCellValue('المتبقي: ${totalDebts - totalPaid}'),
+      DoubleCellValue(overallDebts),
+      DoubleCellValue(overallPaid),
+      TextCellValue('المتبقي: $overallRemaining'),
     ]);
 
     // Save and Share
@@ -220,23 +244,21 @@ class ExportService {
   }
 
   pw.Widget _buildPdfTable(
-    List<Map<String, dynamic>> debts,
+    List<Map<String, dynamic>> transactions,
     pw.Font font,
     pw.Font fontBold,
   ) {
     return pw.TableHelper.fromTextArray(
-      headers: ['التاريخ', 'البيان', 'الدين', 'المدفوع', 'الحالة'],
-      data: debts.map((d) {
-        final date = d['created_at'] != null
-            ? d['created_at'].toString().split('T')[0]
+      headers: ['التاريخ', 'البيان', 'نوع العملية', 'المبلغ'],
+      data: transactions.map((tx) {
+        final date = tx['created_at'] != null
+            ? tx['created_at'].toString().split('T')[0]
             : '';
-        final notes = d['notes'] ?? 'سلفة';
-        final amount = d['amount']?.toString() ?? '0';
-        final paid = d['paid']?.toString() ?? '0';
-        final status = (d['status'] == 'paid')
-            ? 'مدفوع'
-            : ((d['status'] == 'partial') ? 'جزء' : 'غير مدفوع');
-        return [date, notes, amount, paid, status];
+        final isDebt = tx['tx_type'] == 'debt';
+        final notes = isDebt ? (tx['notes'] ?? 'سلفة') : 'تحصيل دفعة';
+        final typeStr = isDebt ? 'سلفة' : 'تحصيل';
+        final amount = tx['amount']?.toString() ?? '0';
+        return [date, notes, typeStr, amount];
       }).toList(),
       border: pw.TableBorder.all(color: PdfColors.grey300),
       headerStyle: pw.TextStyle(font: fontBold, color: PdfColors.white),
@@ -318,30 +340,46 @@ class ExportService {
     required DateTime? startDate,
     required DateTime? endDate,
   }) async {
-    final customers = await _dbService.getAllCustomers();
-    final allDebts = await _dbService
-        .getAllDebts(); // This has d.customer_name from the LEFT JOIN!
+    final allDebts = await _dbService.getAllDebts();
+    final allPayments = await _dbService.getAllPayments();
 
-    final filteredDebts = allDebts.where((d) {
-      if (d['created_at'] == null) return true;
-      final date = DateTime.tryParse(d['created_at']);
+    List transactions = [];
+    for (var d in allDebts) {
+      final map = Map<String, dynamic>.from(d);
+      map['tx_type'] = 'debt';
+      transactions.add(map);
+    }
+    for (var p in allPayments) {
+      final map = Map<String, dynamic>.from(p);
+      map['tx_type'] = 'payment';
+      transactions.add(map);
+    }
+
+    transactions.sort((a, b) {
+      String dateA = a['created_at'] ?? '';
+      String dateB = b['created_at'] ?? '';
+      return dateA.compareTo(dateB);
+    });
+
+    final filteredTx = transactions.where((t) {
+      if (t['created_at'] == null) return true;
+      final date = DateTime.tryParse(t['created_at']);
       if (date == null) return true;
 
       if (startDate != null && date.isBefore(startDate)) return false;
-      if (endDate != null && date.isAfter(endDate.add(const Duration(days: 1))))
-        return false;
+      if (endDate != null && date.isAfter(endDate.add(const Duration(days: 1)))) return false;
       return true;
     }).toList();
 
     if (format == 'pdf') {
-      await _generateAllCustomersPDF(filteredDebts, startDate, endDate);
+      await _generateAllCustomersPDF(filteredTx.cast<Map<String, dynamic>>(), startDate, endDate);
     } else {
-      await _generateAllCustomersExcel(filteredDebts, startDate, endDate);
+      await _generateAllCustomersExcel(filteredTx.cast<Map<String, dynamic>>(), startDate, endDate);
     }
   }
 
   Future<void> _generateAllCustomersPDF(
-    List<Map<String, dynamic>> debts,
+    List<Map<String, dynamic>> transactions,
     DateTime? start,
     DateTime? end,
   ) async {
@@ -356,9 +394,12 @@ class ExportService {
 
     double totalDebts = 0;
     double totalPaid = 0;
-    for (var d in debts) {
-      totalDebts += d['amount'] ?? 0;
-      totalPaid += d['paid'] ?? 0;
+    for (var tx in transactions) {
+      if (tx['tx_type'] == 'debt') {
+        totalDebts += double.parse((tx['amount'] ?? 0).toString());
+      } else if (tx['tx_type'] == 'payment') {
+        totalPaid += double.parse((tx['amount'] ?? 0).toString());
+      }
     }
     double remaining = totalDebts - totalPaid;
 
@@ -385,22 +426,19 @@ class ExportService {
               'التاريخ',
               'اسم العميل',
               'البيان',
-              'الدين',
-              'المدفوع',
-              'الحالة',
+              'العملية',
+              'المبلغ',
             ],
-            data: debts.map((d) {
-              final date = d['created_at'] != null
-                  ? d['created_at'].toString().split('T')[0]
+            data: transactions.map((tx) {
+              final date = tx['created_at'] != null
+                  ? tx['created_at'].toString().split('T')[0]
                   : '';
-              final cName = d['customer_name'] ?? 'غير معروف';
-              final notes = d['notes'] ?? 'سلفة';
-              final amount = d['amount']?.toString() ?? '0';
-              final paid = d['paid']?.toString() ?? '0';
-              final status = (d['status'] == 'paid')
-                  ? 'مدفوع'
-                  : ((d['status'] == 'partial') ? 'جزء' : 'غير مدفوع');
-              return [date, cName, notes, amount, paid, status];
+              final cName = tx['customer_name'] ?? 'غير معروف';
+              final isDebt = tx['tx_type'] == 'debt';
+              final notes = isDebt ? (tx['notes'] ?? 'سلفة') : 'تحصيل دفعة';
+              final typeStr = isDebt ? 'سلفة' : 'تحصيل';
+              final amount = tx['amount']?.toString() ?? '0';
+              return [date, cName, notes, typeStr, amount];
             }).toList(),
             border: pw.TableBorder.all(color: PdfColors.grey300),
             headerStyle: pw.TextStyle(font: fontBold, color: PdfColors.white),
@@ -427,7 +465,7 @@ class ExportService {
   }
 
   Future<void> _generateAllCustomersExcel(
-    List<Map<String, dynamic>> debts,
+    List<Map<String, dynamic>> transactions,
     DateTime? start,
     DateTime? end,
   ) async {
@@ -439,36 +477,35 @@ class ExportService {
       TextCellValue('التاريخ'),
       TextCellValue('اسم العميل'),
       TextCellValue('البيان/الملاحظات'),
-      TextCellValue('مبلغ الدين'),
-      TextCellValue('المدفوع'),
-      TextCellValue('الحالة'),
+      TextCellValue('نوع العملية'),
+      TextCellValue('المبلغ'),
     ]);
 
     double totalDebts = 0;
     double totalPaid = 0;
 
-    for (var d in debts) {
-      final date = d['created_at'] != null
-          ? d['created_at'].toString().split('T')[0]
+    for (var tx in transactions) {
+      final date = tx['created_at'] != null
+          ? tx['created_at'].toString().split('T')[0]
           : '';
-      final cName = d['customer_name'] ?? 'غير معروف';
-      final notes = d['notes'] ?? 'سلفة';
-      final amount = d['amount'] ?? 0.0;
-      final paid = d['paid'] ?? 0.0;
-      final status = (d['status'] == 'paid')
-          ? 'مدفوع'
-          : ((d['status'] == 'partial') ? 'مدفوع جزئياً' : 'غير مدفوع');
+      final cName = tx['customer_name'] ?? 'غير معروف';
+      final isDebt = tx['tx_type'] == 'debt';
+      final notes = isDebt ? (tx['notes'] ?? '') : 'تحصيل دفعة';
+      final amount = double.parse((tx['amount'] ?? 0).toString());
+      final typeStr = isDebt ? 'سلفة' : 'تحصيل';
 
-      totalDebts += amount;
-      totalPaid += paid;
+      if (isDebt) {
+        totalDebts += amount;
+      } else {
+        totalPaid += amount;
+      }
 
       sheetObject.appendRow([
         TextCellValue(date),
         TextCellValue(cName),
         TextCellValue(notes),
+        TextCellValue(typeStr),
         DoubleCellValue(amount.toDouble()),
-        DoubleCellValue(paid.toDouble()),
-        TextCellValue(status),
       ]);
     }
 

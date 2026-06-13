@@ -210,8 +210,12 @@ class CustomersScreen extends StatelessWidget {
                       finalPhone = finalPhone.substring(1);
                     }
                     String fullPhone = '${selectedCountryCode.replaceAll('+', '')}$finalPhone';
-                    controller.addCustomer(nameController.text, fullPhone);
+                    
+                    // Close dialog immediately for better UX
                     Get.back();
+                    
+                    // Add customer in the background
+                    controller.addCustomer(nameController.text, fullPhone);
                   }
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),

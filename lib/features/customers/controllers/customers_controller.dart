@@ -37,33 +37,10 @@ class CustomersController extends GetxController {
   Future<void> fetchCustomers() async {
     isLoading.value = true;
     try {
-      // 1. Fetch local customers first for fast UI
-      final localCustomers = await _dbService.getAllCustomers();
-      if (localCustomers.isNotEmpty) {
-        customers.value = localCustomers;
-      }
-
-      // 2. Try fetching from remote if online
-      if (_syncService.isOnline.value) {
-        final response = await _apiClient.get('/customers');
-        if (response.data['status'] == 'success') {
-          final remoteCustomers = response.data['data'];
-          
-          // Clear old synced data to prevent duplicates
-          await _dbService.clearSyncedCustomers();
-          
-          // Save to local DB
-          for (var c in remoteCustomers) {
-            await _dbService.saveCustomer(Map<String, dynamic>.from(c));
-          }
-          
-          // Reload from local DB to get search and sorting consistent
-          _refreshLocalList();
-        }
-      }
+      await _refreshLocalList();
     } catch (e) {
       if (customers.isEmpty) {
-        Get.snackbar('تنبيه', 'أنت غير متصل بالإنترنت ولا يوجد بيانات محلية.');
+        Get.snackbar('تنبيه', 'يوجد مشكلة في قراءة البيانات المحلية.');
       }
     } finally {
       isLoading.value = false;
@@ -84,6 +61,13 @@ class CustomersController extends GetxController {
   }
 
   Future<bool> addCustomer(String name, String phone) async {
+    // Check local duplicate first
+    bool exists = customers.any((c) => c['name'] == name || c['primary_phone'] == phone);
+    if (exists) {
+      Get.snackbar('تنبيه', 'يوجد عميل مسجل مسبقاً بنفس الاسم أو رقم الهاتف.', backgroundColor: Colors.orange, colorText: Colors.white);
+      return false;
+    }
+
     final payload = {'name': name, 'primary_phone': phone};
     
     // Save locally first for instant UI response
@@ -98,27 +82,22 @@ class CustomersController extends GetxController {
     await _dbService.saveCustomer(localCustomer, isSynced: false);
     _refreshLocalList();
 
-    // Sync or Queue
-    bool success = await _syncService.executeOrQueue(
-      'add_customer',
-      payload,
-      onlineAction: () async {
-        final response = await _apiClient.post('/customers', {}, data: payload);
-        if (response.statusCode == 201 || response.statusCode == 200) {
-          final newCustomer = response.data['data'];
-          await _dbService.saveCustomer(newCustomer);
-          // Try to remove the temp one, or just let it be overwritten by refresh
-          _refreshLocalList();
-        } else {
-          throw Exception('Failed from server');
-        }
-      }
-    );
+    try {
+      // Sync or Queue
+      bool success = await _syncService.executeOrQueue(
+        'add_customer',
+        payload,
+      );
 
-    if (success) {
-      Get.snackbar('نجاح', 'تم إضافة العميل بنجاح', backgroundColor: Colors.green, colorText: Colors.white);
+      if (success) {
+        Get.snackbar('نجاح', 'تم إرسال بيانات العميل', backgroundColor: Colors.green, colorText: Colors.white);
+      } else {
+        Get.snackbar('تنبيه', 'تم إضافة العميل محلياً وسيتم مزامنته لاحقاً.', backgroundColor: Colors.orange, colorText: Colors.white);
+      }
+      return true; // Return true to close dialog
+    } catch (e) {
+      return true; // Even if it fails, it's added locally, so close dialog
     }
-    return true; // Return true because it's locally added anyway
   }
 
   Future<void> sendToAll() async {
@@ -212,6 +191,23 @@ class CustomersController extends GetxController {
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
+    }
+  }
+
+  Future<void> deleteCustomer(int id) async {
+    // Remove locally
+    await _dbService.deleteCustomer(id);
+    _refreshLocalList();
+
+    if (_syncService.isOnline.value) {
+      try {
+        await _apiClient.delete('/customers/$id');
+        Get.snackbar('نجاح', 'تم حذف العميل بنجاح', backgroundColor: Colors.green, colorText: Colors.white);
+      } catch (e) {
+        Get.snackbar('خطأ', 'فشل حذف العميل من الخادم', backgroundColor: Colors.red, colorText: Colors.white);
+      }
+    } else {
+       Get.snackbar('تنبيه', 'أنت غير متصل بالإنترنت. سيتم حذف العميل محلياً فقط.', backgroundColor: Colors.orange, colorText: Colors.white);
     }
   }
 }

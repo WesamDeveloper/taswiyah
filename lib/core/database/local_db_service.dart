@@ -1,5 +1,6 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'dart:convert';
 
 class LocalDbService {
   static final LocalDbService instance = LocalDbService._init();
@@ -19,9 +20,30 @@ class LocalDbService {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: _upgradeDB,
     );
+  }
+
+  Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Add payments table
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        remote_id INTEGER,
+        tenant_id INTEGER,
+        branch_id INTEGER,
+        debt_id INTEGER,
+        customer_id INTEGER,
+        amount REAL NOT NULL,
+        created_at TEXT,
+        is_synced INTEGER DEFAULT 1,
+        FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
+      )
+      ''');
+    }
   }
 
   Future _createDB(Database db, int version) async {
@@ -57,6 +79,22 @@ class LocalDbService {
       status TEXT DEFAULT 'unpaid',
       due_date TEXT,
       notes TEXT,
+      created_at TEXT,
+      is_synced INTEGER DEFAULT 1,
+      FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
+    )
+    ''');
+
+    // Payments Table
+    await db.execute('''
+    CREATE TABLE payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      remote_id INTEGER,
+      tenant_id INTEGER,
+      branch_id INTEGER,
+      debt_id INTEGER,
+      customer_id INTEGER,
+      amount REAL NOT NULL,
       created_at TEXT,
       is_synced INTEGER DEFAULT 1,
       FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
@@ -117,6 +155,16 @@ class LocalDbService {
     return null;
   }
 
+  Future<void> deleteCustomer(int id) async {
+    final db = await instance.database;
+    await db.delete('customers', where: 'id = ?', whereArgs: [id]);
+    // Cascade delete is defined on the foreign key for debts, 
+    // but sqflite needs PRAGMA foreign_keys = ON to respect it automatically.
+    // So we'll explicitly delete debts as well just in case.
+    await db.delete('debts', where: 'customer_id = ?', whereArgs: [id]);
+    await db.delete('payments', where: 'customer_id = ?', whereArgs: [id]);
+  }
+
   Future<void> clearSyncedCustomers() async {
     final db = await instance.database;
     await db.delete('customers', where: 'is_synced = 1');
@@ -125,7 +173,8 @@ class LocalDbService {
   // --- Debts ---
   Future<void> saveDebt(Map<String, dynamic> debt, {bool isSynced = true}) async {
     final db = await instance.database;
-    final remoteId = debt['id'];
+    // If it's from local DB, it has remote_id. If from server, it has id which is the remote_id.
+    final remoteId = debt['remote_id'] ?? debt['id'];
     
     // Check if debt with this remote_id already exists
     final existing = await db.query('debts', where: 'remote_id = ?', whereArgs: [remoteId]);
@@ -181,6 +230,72 @@ class LocalDbService {
     ''');
   }
 
+  // --- Payments ---
+  Future<void> savePayment(Map<String, dynamic> payment, {bool isSynced = true}) async {
+    final db = await instance.database;
+    final remoteId = payment['remote_id'] ?? payment['id'];
+    
+    final existing = await db.query('payments', where: 'remote_id = ?', whereArgs: [remoteId]);
+    
+    // Some payments from backend might not have customer_id directly (they have debt_id).
+    // We should ensure customer_id is stored if possible, or derive it.
+    // If it's passed from the app, it will have customer_id.
+    int? customerId = payment['customer_id'];
+    if (customerId == null && payment['debt_id'] != null) {
+      final debtRes = await db.query('debts', where: 'remote_id = ?', whereArgs: [payment['debt_id']]);
+      if (debtRes.isNotEmpty) {
+        customerId = debtRes.first['customer_id'] as int?;
+      }
+    }
+
+    final data = {
+      'remote_id': remoteId,
+      'tenant_id': payment['tenant_id'],
+      'branch_id': payment['branch_id'],
+      'debt_id': payment['debt_id'],
+      'customer_id': customerId,
+      'amount': payment['amount'],
+      'created_at': payment['created_at'],
+      'is_synced': isSynced ? 1 : 0,
+    };
+
+    if (existing.isNotEmpty) {
+      await db.update('payments', data, where: 'remote_id = ?', whereArgs: [remoteId]);
+    } else {
+      await db.insert('payments', data);
+    }
+  }
+
+  Future<void> deletePaymentByRemoteId(int remoteId) async {
+    final db = await instance.database;
+    await db.delete('payments', where: 'remote_id = ?', whereArgs: [remoteId]);
+  }
+
+  Future<void> clearAllSyncedPayments() async {
+    final db = await instance.database;
+    await db.delete('payments', where: 'is_synced = 1');
+  }
+
+  Future<void> clearSyncedCustomerPayments(int customerId) async {
+    final db = await instance.database;
+    await db.delete('payments', where: 'customer_id = ? AND is_synced = 1', whereArgs: [customerId]);
+  }
+
+  Future<List<Map<String, dynamic>>> getCustomerPayments(int customerId) async {
+    final db = await instance.database;
+    return await db.query('payments', where: 'customer_id = ?', whereArgs: [customerId], orderBy: 'created_at DESC');
+  }
+
+  Future<List<Map<String, dynamic>>> getAllPayments() async {
+    final db = await instance.database;
+    return await db.rawQuery('''
+      SELECT p.*, c.name as customer_name 
+      FROM payments p 
+      LEFT JOIN customers c ON p.customer_id = c.id 
+      ORDER BY p.created_at DESC
+    ''');
+  }
+
   // --- Sync Queue ---
   Future<void> addToSyncQueue(String operation, String payload) async {
     final db = await instance.database;
@@ -196,6 +311,105 @@ class LocalDbService {
     return await db.query('sync_queue', orderBy: 'created_at ASC');
   }
 
+  Future<Map<String, dynamic>?> getSyncQueueItem(int id) async {
+    final db = await instance.database;
+    final results = await db.query('sync_queue', where: 'id = ?', whereArgs: [id]);
+    if (results.isNotEmpty) return results.first;
+    return null;
+  }
+
+  Future<void> replaceCustomerTempId(int tempId, int newId) async {
+    final db = await instance.database;
+    
+    // 1. Update primary key and sync status in customers table
+    await db.update('customers', {'id': newId, 'is_synced': 1}, where: 'id = ?', whereArgs: [tempId]);
+
+    // 2. Update foreign keys in local tables
+    await db.update('debts', {'customer_id': newId}, where: 'customer_id = ?', whereArgs: [tempId]);
+    await db.update('payments', {'customer_id': newId}, where: 'customer_id = ?', whereArgs: [tempId]);
+    
+    // 2. Update payloads in sync_queue
+    final queue = await db.query('sync_queue');
+    for (var item in queue) {
+      if (item['payload'] != null) {
+        String payloadStr = item['payload'] as String;
+        // Simple string replacement could be risky, but since it's JSON, parsing is safer
+        try {
+          final Map<String, dynamic> payload = jsonDecode(payloadStr);
+          bool modified = false;
+          
+          if (payload['customer_id'] == tempId) {
+            payload['customer_id'] = newId;
+            modified = true;
+          }
+          if (payload['id'] == tempId && item['operation'] == 'update_customer') {
+            payload['id'] = newId;
+            modified = true;
+          }
+          
+          if (modified) {
+            await db.update(
+              'sync_queue', 
+              {'payload': jsonEncode(payload)}, 
+              where: 'id = ?', 
+              whereArgs: [item['id']]
+            );
+          }
+        } catch (e) {
+          // ignore parsing error
+        }
+      }
+    }
+  }
+
+  Future<void> replaceDebtTempId(int tempId, int newId) async {
+    final db = await instance.database;
+    
+    // 1. Update primary key and sync status in debts table
+    await db.update('debts', {'remote_id': newId, 'is_synced': 1}, where: 'remote_id = ?', whereArgs: [tempId]);
+
+    // 2. Update foreign keys in local tables
+    await db.update('payments', {'debt_id': newId}, where: 'debt_id = ?', whereArgs: [tempId]);
+    
+    // 2. Update payloads in sync_queue
+    final queue = await db.query('sync_queue');
+    for (var item in queue) {
+      if (item['payload'] != null) {
+        String payloadStr = item['payload'] as String;
+        try {
+          final Map<String, dynamic> payload = jsonDecode(payloadStr);
+          bool modified = false;
+          
+          if (payload['debt_id'] == tempId) {
+            payload['debt_id'] = newId;
+            modified = true;
+          }
+          
+          if (modified) {
+            await db.update(
+              'sync_queue', 
+              {'payload': jsonEncode(payload)}, 
+              where: 'id = ?', 
+              whereArgs: [item['id']]
+            );
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  }
+
+  Future<void> markPaymentAsSynced(int id) async {
+    final db = await instance.database;
+    await db.update('payments', {'is_synced': 1}, where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> markCustomerAsSynced(int id) async {
+    final db = await instance.database;
+    await db.update('customers', {'is_synced': 1}, where: 'id = ?', whereArgs: [id]);
+  }
+
   Future<void> removeFromSyncQueue(int id) async {
     final db = await instance.database;
     await db.delete('sync_queue', where: 'id = ?', whereArgs: [id]);
@@ -205,6 +419,7 @@ class LocalDbService {
     final db = await instance.database;
     await db.delete('customers');
     await db.delete('debts');
+    await db.delete('payments');
     await db.delete('sync_queue');
   }
 }

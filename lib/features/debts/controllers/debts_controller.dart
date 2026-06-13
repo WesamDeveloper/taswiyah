@@ -23,29 +23,18 @@ class DebtsController extends GetxController {
   Future<void> fetchDebts() async {
     isLoading.value = true;
     try {
-      final localDebts = await _dbService.getAllDebts();
-      if (localDebts.isNotEmpty) {
-        debts.value = localDebts;
-      }
-
-      if (_syncService.isOnline.value) {
-        final response = await _apiClient.get('/debts');
-        if (response.data['status'] == 'success') {
-          final remoteDebts = response.data['data'];
-          await _dbService.clearAllSyncedDebts();
-          for (var d in remoteDebts) {
-            await _dbService.saveDebt(Map<String, dynamic>.from(d));
-          }
-          debts.value = await _dbService.getAllDebts();
-        }
-      }
+      await _refreshLocalList();
     } catch (e) {
       if (debts.isEmpty) {
-        Get.snackbar('تنبيه', 'لا يوجد اتصال بالإنترنت ولا بيانات محلية.');
+        Get.snackbar('تنبيه', 'يوجد مشكلة في قراءة الديون المحلية.');
       }
     } finally {
       isLoading.value = false;
     }
+  }
+
+  Future<void> _refreshLocalList() async {
+    debts.value = await _dbService.getAllDebts();
   }
 
   Future<bool> addDebt(int customerId, double amount, String notes) async {
@@ -68,17 +57,6 @@ class DebtsController extends GetxController {
     bool success = await _syncService.executeOrQueue(
       'add_debt',
       payload,
-      onlineAction: () async {
-        final response = await _apiClient.post('/debts', {}, data: payload);
-        if (response.statusCode == 201 || response.statusCode == 200) {
-          final newDebt = response.data['data'];
-          await _dbService.deleteDebtByRemoteId(tempId);
-          await _dbService.saveDebt(Map<String, dynamic>.from(newDebt));
-          debts.value = await _dbService.getAllDebts();
-        } else {
-          throw Exception('Failed');
-        }
-      }
     );
 
     if (success) {

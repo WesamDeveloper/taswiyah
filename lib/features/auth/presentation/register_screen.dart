@@ -66,12 +66,23 @@ class RegisterScreen extends StatelessWidget {
                 const SizedBox(height: 16),
                 
                 // Password
-                TextField(
+                Obx(() => TextField(
                   controller: _authController.passwordController,
-                  decoration: const InputDecoration(labelText: 'كلمة المرور', prefixIcon: Icon(Icons.lock)),
-                  obscureText: true,
+                  decoration: InputDecoration(
+                    labelText: 'كلمة المرور',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _authController.isPasswordHidden.value 
+                          ? Icons.visibility_off 
+                          : Icons.visibility,
+                      ),
+                      onPressed: () => _authController.togglePasswordVisibility(),
+                    ),
+                  ),
+                  obscureText: _authController.isPasswordHidden.value,
                   textDirection: TextDirection.ltr,
-                ).animate().fade().slideX(),
+                )).animate().fade(delay: 500.ms).slideX(begin: 0.1, end: 0),
                 
                 const SizedBox(height: 32),
                 

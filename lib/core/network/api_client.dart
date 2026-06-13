@@ -40,10 +40,10 @@ class ApiClient {
 
   Future<Response> post(
     String path,
-    Map<String, Object> map, {
+    Map<String, dynamic> map, {
     dynamic data,
   }) async {
-    return await dio.post(path, data: data);
+    return await dio.post(path, data: data ?? map);
   }
 
   Future<Response> get(
