@@ -112,16 +112,16 @@ class CustomerProfileController extends GetxController {
       Get.find<DashboardController>().fetchStats();
     }
 
-    bool success = await _syncService.executeOrQueue('add_debt', payload);
-
-    if (success) {
-      Get.snackbar(
-        'نجاح',
-        'تم تسجيل الدين وإشعار العميل',
-        backgroundColor: Colors.green,
-        colorText: Colors.white,
-      );
-    }
+    _syncService.executeOrQueue('add_debt', payload).then((success) {
+      if (success) {
+        Get.snackbar(
+          'نجاح',
+          'تم تسجيل الدين وإشعار العميل',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      }
+    });
   }
 
   Future<void> receivePayment(double amount) async {
@@ -188,16 +188,16 @@ class CustomerProfileController extends GetxController {
       Get.find<DashboardController>().fetchStats();
     }
 
-    bool success = await _syncService.executeOrQueue('add_payment', payload);
-
-    if (success) {
-      Get.snackbar(
-        'نجاح',
-        'تم خصم المبلغ من الديون',
-        backgroundColor: Colors.green,
-        colorText: Colors.white,
-      );
-    }
+    _syncService.executeOrQueue('add_payment', payload).then((success) {
+      if (success) {
+        Get.snackbar(
+          'نجاح',
+          'تم خصم المبلغ من الديون',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      }
+    });
   }
 
   Future<void> sendReminder() async {
@@ -259,19 +259,19 @@ class CustomerProfileController extends GetxController {
     await _dbService.saveCustomer(cust);
     fetchProfile();
 
-    bool success = await _syncService.executeOrQueue(
+    _syncService.executeOrQueue(
       'update_customer',
       payload,
-    );
-
-    if (success) {
-      Get.snackbar(
-        'نجاح',
-        'تم تحديث بيانات العميل بنجاح',
-        backgroundColor: Colors.green,
-        colorText: Colors.white,
-      );
-    }
+    ).then((success) {
+      if (success) {
+        Get.snackbar(
+          'نجاح',
+          'تم تحديث بيانات العميل بنجاح',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      }
+    });
   }
 
   Future<void> updateSchedule(DateTime? date, int? days) async {

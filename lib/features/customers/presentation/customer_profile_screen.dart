@@ -307,46 +307,59 @@ class CustomerProfileScreen extends StatelessWidget {
   ) {
     final amountController = TextEditingController();
     final notesController = TextEditingController();
+    bool isSaving = false;
 
     Get.dialog(
-      AlertDialog(
-        title: const Text('إضافة سلفة جديدة'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: amountController,
-              decoration: const InputDecoration(labelText: 'المبلغ'),
-              keyboardType: TextInputType.number,
+      StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: const Text('إضافة سلفة جديدة'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: amountController,
+                  decoration: const InputDecoration(labelText: 'المبلغ'),
+                  keyboardType: TextInputType.number,
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: notesController,
+                  decoration: const InputDecoration(labelText: 'ملاحظات'),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: notesController,
-              decoration: const InputDecoration(labelText: 'ملاحظات'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('إلغاء')),
-          ElevatedButton(
-            onPressed: () {
-              if (amountController.text.isNotEmpty) {
-                controller.addDebt(
-                  double.parse(amountController.text),
-                  notesController.text,
-                );
-                Get.back();
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primaryColor,
-            ),
-            child: const Text(
-              'إضافة وتنبيه',
-              style: TextStyle(color: Colors.white),
-            ),
-          ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: isSaving ? null : () => Navigator.pop(context),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: isSaving ? null : () async {
+                  if (amountController.text.isNotEmpty) {
+                    setState(() => isSaving = true);
+                    try {
+                      await controller.addDebt(
+                        double.parse(amountController.text),
+                        notesController.text,
+                      );
+                      if (context.mounted) Navigator.pop(context);
+                    } catch (e) {
+                      if (context.mounted) setState(() => isSaving = false);
+                      Get.snackbar('خطأ', 'حدث خطأ أثناء الإضافة');
+                    }
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                ),
+                child: isSaving 
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                  : const Text('إضافة وتنبيه', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        }
       ),
     );
   }
@@ -356,42 +369,55 @@ class CustomerProfileScreen extends StatelessWidget {
     CustomerProfileController controller,
   ) {
     final amountController = TextEditingController();
+    bool isSaving = false;
 
     Get.dialog(
-      AlertDialog(
-        title: const Text('تحصيل دفعة'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'سيتم خصم هذا المبلغ من أقدم سلفة غير مسددة على العميل تلقائياً.',
+      StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: const Text('تحصيل دفعة'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'سيتم خصم هذا المبلغ من أقدم سلفة غير مسددة على العميل تلقائياً.',
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: amountController,
+                  decoration: const InputDecoration(labelText: 'المبلغ المحصل'),
+                  keyboardType: TextInputType.number,
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: amountController,
-              decoration: const InputDecoration(labelText: 'المبلغ المحصل'),
-              keyboardType: TextInputType.number,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('إلغاء')),
-          ElevatedButton(
-            onPressed: () {
-              if (amountController.text.isNotEmpty) {
-                controller.receivePayment(double.parse(amountController.text));
-                Get.back();
-              }
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.secondaryColor,
-            ),
-            child: const Text(
-              'تأكيد التحصيل',
-              style: TextStyle(color: Colors.white),
-            ),
-          ),
-        ],
+            actions: [
+              TextButton(
+                onPressed: isSaving ? null : () => Navigator.pop(context),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: isSaving ? null : () async {
+                  if (amountController.text.isNotEmpty) {
+                    setState(() => isSaving = true);
+                    try {
+                      await controller.receivePayment(double.parse(amountController.text));
+                      if (context.mounted) Navigator.pop(context);
+                    } catch (e) {
+                      if (context.mounted) setState(() => isSaving = false);
+                      Get.snackbar('خطأ', 'حدث خطأ أثناء التحصيل');
+                    }
+                  }
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.secondaryColor,
+                ),
+                child: isSaving 
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                  : const Text('تأكيد التحصيل', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        }
       ),
     );
   }
@@ -402,6 +428,7 @@ class CustomerProfileScreen extends StatelessWidget {
   ) {
     final daysController = TextEditingController();
     DateTime? selectedDate;
+    bool isSaving = false;
 
     Get.dialog(
       StatefulBuilder(
@@ -451,27 +478,34 @@ class CustomerProfileScreen extends StatelessWidget {
             ),
             actions: [
               TextButton(
-                onPressed: () => Get.back(),
+                onPressed: isSaving ? null : () => Navigator.pop(context),
                 child: const Text('إلغاء'),
               ),
               ElevatedButton(
-                onPressed: () {
+                onPressed: isSaving ? null : () async {
                   if (selectedDate == null) {
                     Get.snackbar('تنبيه', 'يرجى تحديد التاريخ');
                     return;
                   }
-                  Get.back();
+                  setState(() => isSaving = true);
                   int? days = int.tryParse(daysController.text);
-                  controller.updateSchedule(selectedDate, days);
+                  try {
+                    await controller.updateSchedule(selectedDate, days);
+                    if (context.mounted) Navigator.pop(context);
+                  } catch (e) {
+                    if (context.mounted) setState(() => isSaving = false);
+                  }
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.primaryColor,
                 ),
-                child: const Text('حفظ', style: TextStyle(color: Colors.white)),
+                child: isSaving 
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                  : const Text('حفظ', style: TextStyle(color: Colors.white)),
               ),
             ],
           );
-        },
+        }
       ),
     );
   }
@@ -486,6 +520,7 @@ class CustomerProfileScreen extends StatelessWidget {
     String originalPhone = controller.customer['primary_phone'] ?? '';
     String selectedCountryCode = '+967';
     String phoneWithoutCode = originalPhone;
+    bool isSaving = false;
 
     final List<Map<String, String>> countryCodes = [
       {'code': '+967', 'flag': '🇾🇪'},
@@ -562,30 +597,37 @@ class CustomerProfileScreen extends StatelessWidget {
             ),
             actions: [
               TextButton(
-                onPressed: () => Get.back(),
+                onPressed: isSaving ? null : () => Navigator.pop(context),
                 child: const Text(
                   'إلغاء',
                   style: TextStyle(color: Colors.grey),
                 ),
               ),
               ElevatedButton(
-                onPressed: () {
+                onPressed: isSaving ? null : () async {
                   if (nameController.text.isNotEmpty &&
                       phoneController.text.isNotEmpty) {
+                    setState(() => isSaving = true);
                     String finalPhone = phoneController.text.trim();
                     if (finalPhone.startsWith('0')) {
                       finalPhone = finalPhone.substring(1);
                     }
                     String fullPhone =
                         '${selectedCountryCode.replaceAll('+', '')}$finalPhone';
-                    controller.updateProfile(nameController.text, fullPhone);
-                    Get.back();
+                    try {
+                      await controller.updateProfile(nameController.text, fullPhone);
+                      if (context.mounted) Navigator.pop(context);
+                    } catch (e) {
+                      if (context.mounted) setState(() => isSaving = false);
+                    }
                   }
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppTheme.primaryColor,
                 ),
-                child: const Text(
+                child: isSaving 
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                  : const Text(
                   'حفظ التعديلات',
                   style: TextStyle(color: Colors.white),
                 ),
