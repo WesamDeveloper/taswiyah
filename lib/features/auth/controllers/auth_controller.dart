@@ -23,6 +23,21 @@ class AuthController extends GetxController {
   var isRegisterLoading = false.obs;
   var errorMessage = ''.obs;
   var isPasswordHidden = true.obs;
+  var autoRemindDay = Rx<int?>(null);
+
+  @override
+  void onInit() {
+    super.onInit();
+    _loadAutoRemindDay();
+  }
+
+  Future<void> _loadAutoRemindDay() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.containsKey('auto_remind_day')) {
+      int day = prefs.getInt('auto_remind_day')!;
+      autoRemindDay.value = day == -1 ? null : day;
+    }
+  }
 
   void togglePasswordVisibility() {
     isPasswordHidden.value = !isPasswordHidden.value;
@@ -262,6 +277,14 @@ class AuthController extends GetxController {
         data: {'auto_remind_day': day},
       );
       if (response.statusCode == 200) {
+        final prefs = await SharedPreferences.getInstance();
+        if (day == null) {
+          await prefs.setInt('auto_remind_day', -1);
+        } else {
+          await prefs.setInt('auto_remind_day', day);
+        }
+        autoRemindDay.value = day;
+
         Get.snackbar(
           'نجاح',
           'تم حفظ إعدادات الرسائل التلقائية',

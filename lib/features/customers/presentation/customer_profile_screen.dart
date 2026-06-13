@@ -426,9 +426,33 @@ class CustomerProfileScreen extends StatelessWidget {
     BuildContext context,
     CustomerProfileController controller,
   ) {
-    final daysController = TextEditingController();
-    DateTime? selectedDate;
+    final cust = controller.customer;
+    DateTime? selectedDate = cust['next_reminder_date'] != null 
+        ? DateTime.tryParse(cust['next_reminder_date'].toString()) 
+        : null;
+        
+    int? selectedDays = cust['reminder_frequency_days'] != null 
+        ? int.tryParse(cust['reminder_frequency_days'].toString()) 
+        : null;
+
     bool isSaving = false;
+
+    final List<Map<String, dynamic>> frequencyOptions = [
+      {'label': 'بدون تكرار', 'days': null},
+      {'label': 'يومياً', 'days': 1},
+      {'label': 'كل يومين', 'days': 2},
+      {'label': 'كل 3 أيام', 'days': 3},
+      {'label': 'أسبوعياً', 'days': 7},
+      {'label': 'كل أسبوعين', 'days': 14},
+      {'label': 'شهرياً', 'days': 30},
+      {'label': 'كل 3 أشهر', 'days': 90},
+      {'label': 'كل 6 أشهر', 'days': 180},
+      {'label': 'سنوياً', 'days': 365},
+    ];
+    
+    if (!frequencyOptions.any((opt) => opt['days'] == selectedDays)) {
+      selectedDays = null;
+    }
 
     Get.dialog(
       StatefulBuilder(
@@ -457,8 +481,8 @@ class CustomerProfileScreen extends StatelessWidget {
                   onTap: () async {
                     final date = await showDatePicker(
                       context: context,
-                      initialDate: DateTime.now(),
-                      firstDate: DateTime.now(),
+                      initialDate: selectedDate ?? DateTime.now(),
+                      firstDate: DateTime.now().subtract(const Duration(days: 1)),
                       lastDate: DateTime.now().add(const Duration(days: 365)),
                     );
                     if (date != null) {
@@ -467,12 +491,31 @@ class CustomerProfileScreen extends StatelessWidget {
                   },
                 ),
                 const SizedBox(height: 16),
-                TextField(
-                  controller: daysController,
-                  decoration: const InputDecoration(
-                    labelText: 'تكرار (كل كم يوم؟ اختياري)',
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade400),
                   ),
-                  keyboardType: TextInputType.number,
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int?>(
+                      isExpanded: true,
+                      value: selectedDays,
+                      hint: const Text('تكرار التذكير'),
+                      items: frequencyOptions.map((opt) {
+                        return DropdownMenuItem<int?>(
+                          value: opt['days'],
+                          child: Text(opt['label']),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        setState(() {
+                          selectedDays = val;
+                        });
+                      },
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -483,14 +526,13 @@ class CustomerProfileScreen extends StatelessWidget {
               ),
               ElevatedButton(
                 onPressed: isSaving ? null : () async {
-                  if (selectedDate == null) {
-                    Get.snackbar('تنبيه', 'يرجى تحديد التاريخ');
+                  if (selectedDays != null && selectedDate == null) {
+                    Get.snackbar('تنبيه', 'يرجى تحديد تاريخ البدء أولاً');
                     return;
                   }
                   setState(() => isSaving = true);
-                  int? days = int.tryParse(daysController.text);
                   try {
-                    await controller.updateSchedule(selectedDate, days);
+                    await controller.updateSchedule(selectedDate, selectedDays);
                     if (context.mounted) Navigator.pop(context);
                   } catch (e) {
                     if (context.mounted) setState(() => isSaving = false);

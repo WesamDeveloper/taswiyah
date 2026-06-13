@@ -169,39 +169,74 @@ class ProfileScreen extends StatelessWidget {
   }
 
   void _showAutoRemindDialog(BuildContext context, AuthController controller) {
-    final dayController = TextEditingController();
+    int? selectedDay = controller.autoRemindDay.value;
+
+    final List<Map<String, dynamic>> remindOptions = [
+      {'label': 'إيقاف التذكير التلقائي', 'day': null},
+      {'label': 'بداية كل شهر (يوم 1)', 'day': 1},
+      {'label': 'يوم 5 من كل شهر', 'day': 5},
+      {'label': 'يوم 10 من كل شهر', 'day': 10},
+      {'label': 'منتصف كل شهر (يوم 15)', 'day': 15},
+      {'label': 'يوم 20 من كل شهر', 'day': 20},
+      {'label': 'يوم 25 من كل شهر', 'day': 25},
+      {'label': 'نهاية كل شهر (يوم 28)', 'day': 28},
+    ];
 
     Get.dialog(
-      AlertDialog(
-        title: const Text('رسائل التذكير التلقائية'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'أدخل رقم اليوم في الشهر (مثلاً 28) ليتم إرسال رسائل تذكير لجميع العملاء آلياً. اترك الحقل فارغاً لإلغاء الميزة.',
+      StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: const Text('رسائل التذكير التلقائية (العامة)'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'سيتم إرسال رسائل تذكير لجميع العملاء الذين لديهم ديون آلياً في اليوم المحدد من كل شهر.',
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade400),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int?>(
+                      isExpanded: true,
+                      value: selectedDay,
+                      hint: const Text('اختر الموعد'),
+                      items: remindOptions.map((opt) {
+                        return DropdownMenuItem<int?>(
+                          value: opt['day'],
+                          child: Text(opt['label']),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        setState(() {
+                          selectedDay = val;
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: dayController,
-              decoration: const InputDecoration(labelText: 'اليوم (1 - 31)'),
-              keyboardType: TextInputType.number,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('إلغاء')),
-          ElevatedButton(
-            onPressed: () {
-              Get.back();
-              int? day = int.tryParse(dayController.text);
-              controller.updateSettings(day);
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primaryColor,
-            ),
-            child: const Text('حفظ', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+            actions: [
+              TextButton(onPressed: () => Get.back(), child: const Text('إلغاء')),
+              ElevatedButton(
+                onPressed: () {
+                  Get.back();
+                  controller.updateSettings(selectedDay);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                ),
+                child: const Text('حفظ', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        }
       ),
     );
   }

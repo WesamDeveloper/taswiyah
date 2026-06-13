@@ -275,32 +275,34 @@ class CustomerProfileController extends GetxController {
   }
 
   Future<void> updateSchedule(DateTime? date, int? days) async {
-    try {
-      final response = await _apiClient.post(
-        '/customers/$customerId',
-        {},
-        data: {
-          'next_reminder_date': date?.toIso8601String().split('T')[0],
-          'reminder_frequency_days': days,
-        },
-      );
-      if (response.statusCode == 200) {
+    final nextDate = date?.toIso8601String().split('T')[0];
+    
+    // Update local immediately
+    final cust = Map<String, dynamic>.from(customer.value);
+    cust['next_reminder_date'] = nextDate;
+    cust['reminder_frequency_days'] = days;
+    await _dbService.saveCustomer(cust);
+    fetchProfile();
+
+    final payload = {
+      'id': customerId,
+      'next_reminder_date': nextDate,
+      'reminder_frequency_days': days,
+    };
+
+    _syncService.executeOrQueue(
+      'update_customer',
+      payload,
+    ).then((success) {
+      if (success) {
         Get.snackbar(
           'نجاح',
-          'تم حفظ إعدادات تذكير العميل',
+          'تم حفظ إعدادات تذكير العميل بنجاح',
           backgroundColor: Colors.green,
           colorText: Colors.white,
         );
-        fetchProfile();
       }
-    } catch (e) {
-      Get.snackbar(
-        'خطأ',
-        'فشل حفظ الإعدادات',
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-    }
+    });
   }
 
   Future<void> toggleDebtNotification(bool value) async {
