@@ -37,10 +37,41 @@ class DashboardController extends GetxController {
     try {
       // Aggregate offline local data directly
       await _aggregateLocalStats();
+      if (_syncService.isOnline.value) {
+        _fetchUserInfoAsync();
+      }
     } catch (e) {
       Get.snackbar('تنبيه', 'تعذر جلب الإحصائيات المحلية: $e');
     } finally {
       isLoading.value = false;
+    }
+  }
+
+  Future<void> _fetchUserInfoAsync() async {
+    try {
+      final response = await _apiClient.get('/auth/me');
+      if (response.statusCode == 200) {
+        final userData = response.data['data'];
+        final prefs = await SharedPreferences.getInstance();
+        
+        final uName = userData['name'] ?? 'مستخدم';
+        String cName = 'الفرع';
+        if (userData['tenant'] != null) {
+          cName = userData['tenant']['name'] ?? 'الفرع';
+        }
+        
+        await prefs.setString('user_name', uName);
+        await prefs.setString('company_name', cName);
+        
+        if (userData['auto_remind_day'] != null) {
+          await prefs.setInt('auto_remind_day', userData['auto_remind_day']);
+        }
+        
+        userName.value = uName;
+        companyName.value = cName;
+      }
+    } catch (_) {
+      // Ignore network errors in background
     }
   }
 

@@ -98,61 +98,79 @@ class DebtsScreen extends StatelessWidget {
     final amountController = TextEditingController();
     final notesController = TextEditingController();
     int? selectedCustomerId;
+    bool isSaving = false;
 
     Get.dialog(
-      AlertDialog(
-        title: const Text('إنشاء دين جديد'),
-        content: Obx(() {
-          if (custController.customers.isEmpty) {
-            return const Text('الرجاء إضافة عميل أولاً من شاشة العملاء.');
-          }
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Autocomplete<Map<String, dynamic>>(
-                optionsBuilder: (TextEditingValue textEditingValue) {
-                  if (textEditingValue.text.isEmpty) {
-                    return custController.customers.cast<Map<String, dynamic>>();
-                  }
-                  return custController.customers.cast<Map<String, dynamic>>().where((customer) {
-                    return customer['name'].toString().toLowerCase().contains(textEditingValue.text.toLowerCase());
-                  });
-                },
-                displayStringForOption: (Map<String, dynamic> option) => option['name'],
-                onSelected: (Map<String, dynamic> selection) {
-                  selectedCustomerId = selection['id'];
-                },
-                fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
-                  return TextField(
-                    controller: textEditingController,
-                    focusNode: focusNode,
-                    decoration: const InputDecoration(
-                      labelText: 'ابحث واختر العميل',
-                      prefixIcon: Icon(Icons.search),
-                    ),
-                  );
-                },
+      StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: const Text('إنشاء دين جديد'),
+            content: Obx(() {
+              if (custController.customers.isEmpty) {
+                return const Text('الرجاء إضافة عميل أولاً من شاشة العملاء.');
+              }
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Autocomplete<Map<String, dynamic>>(
+                    optionsBuilder: (TextEditingValue textEditingValue) {
+                      if (textEditingValue.text.isEmpty) {
+                        return custController.customers.cast<Map<String, dynamic>>();
+                      }
+                      return custController.customers.cast<Map<String, dynamic>>().where((customer) {
+                        return customer['name'].toString().toLowerCase().contains(textEditingValue.text.toLowerCase());
+                      });
+                    },
+                    displayStringForOption: (Map<String, dynamic> option) => option['name'],
+                    onSelected: (Map<String, dynamic> selection) {
+                      selectedCustomerId = selection['id'];
+                    },
+                    fieldViewBuilder: (context, textEditingController, focusNode, onFieldSubmitted) {
+                      return TextField(
+                        controller: textEditingController,
+                        focusNode: focusNode,
+                        decoration: const InputDecoration(
+                          labelText: 'ابحث واختر العميل',
+                          prefixIcon: Icon(Icons.search),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(controller: amountController, decoration: const InputDecoration(labelText: 'المبلغ'), keyboardType: TextInputType.number),
+                  const SizedBox(height: 8),
+                  TextField(controller: notesController, decoration: const InputDecoration(labelText: 'ملاحظات (اختياري)')),
+                ],
+              );
+            }),
+            actions: [
+              TextButton(
+                onPressed: isSaving ? null : () => Navigator.pop(context), 
+                child: const Text('إلغاء', style: TextStyle(color: Colors.grey))
               ),
-              const SizedBox(height: 8),
-              TextField(controller: amountController, decoration: const InputDecoration(labelText: 'المبلغ'), keyboardType: TextInputType.number),
-              const SizedBox(height: 8),
-              TextField(controller: notesController, decoration: const InputDecoration(labelText: 'ملاحظات (اختياري)')),
+              ElevatedButton(
+                onPressed: isSaving ? null : () async {
+                  if (selectedCustomerId != null && amountController.text.isNotEmpty) {
+                    setState(() => isSaving = true);
+                    try {
+                      await controller.addDebt(selectedCustomerId!, double.parse(amountController.text), notesController.text);
+                      if (context.mounted) Navigator.pop(context);
+                    } catch (e) {
+                      if (context.mounted) setState(() => isSaving = false);
+                      Get.snackbar('خطأ', 'حدث خطأ أثناء الإضافة');
+                    }
+                  } else {
+                    Get.snackbar('تنبيه', 'يرجى اختيار العميل وإدخال المبلغ');
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
+                child: isSaving 
+                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
+                  : const Text('إضافة وإشعار', style: TextStyle(color: Colors.white)),
+              ),
             ],
           );
-        }),
-        actions: [
-          TextButton(onPressed: () => Get.back(), child: const Text('إلغاء', style: TextStyle(color: Colors.grey))),
-          ElevatedButton(
-            onPressed: () {
-              if (selectedCustomerId != null && amountController.text.isNotEmpty) {
-                controller.addDebt(selectedCustomerId!, double.parse(amountController.text), notesController.text);
-                Get.back();
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primaryColor),
-            child: const Text('إضافة وإشعار', style: TextStyle(color: Colors.white)),
-          ),
-        ],
+        }
       )
     );
   }

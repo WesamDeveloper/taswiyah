@@ -5,6 +5,8 @@ import 'package:get/get.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/network/sync_service.dart';
 import '../../../core/database/local_db_service.dart';
+import '../../customers/controllers/customers_controller.dart';
+import '../../dashboard/controllers/dashboard_controller.dart';
 
 class DebtsController extends GetxController {
   final ApiClient _apiClient = ApiClient();
@@ -52,16 +54,33 @@ class DebtsController extends GetxController {
       'created_at': DateTime.now().toIso8601String(),
     };
     await _dbService.saveDebt(localDebt, isSynced: false);
+
+    // Update customer remaining balance
+    final cust = await _dbService.getCustomer(customerId);
+    if (cust != null) {
+      final mutableCust = Map<String, dynamic>.from(cust);
+      mutableCust['remaining_balance'] = (mutableCust['remaining_balance'] ?? 0) + amount;
+      await _dbService.saveCustomer(mutableCust);
+    }
+
     debts.value = await _dbService.getAllDebts();
 
-    bool success = await _syncService.executeOrQueue(
+    if (Get.isRegistered<CustomersController>()) {
+      Get.find<CustomersController>().fetchCustomers();
+    }
+    if (Get.isRegistered<DashboardController>()) {
+      Get.find<DashboardController>().fetchStats();
+    }
+
+    _syncService.executeOrQueue(
       'add_debt',
       payload,
-    );
+    ).then((success) {
+      if (success) {
+        Get.snackbar('نجاح', 'تم تسجيل الدين وإشعار العميل', backgroundColor: Colors.green, colorText: Colors.white);
+      }
+    });
 
-    if (success) {
-      Get.snackbar('نجاح', 'تم تسجيل الدين وإشعار العميل', backgroundColor: Colors.green, colorText: Colors.white);
-    }
     return true;
   }
 }
