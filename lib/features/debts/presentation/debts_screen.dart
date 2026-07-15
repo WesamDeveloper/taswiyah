@@ -59,7 +59,7 @@ class DebtsScreen extends StatelessWidget {
                   ),
                   child: Icon(Icons.receipt_long, color: isUnpaid ? AppTheme.danger : AppTheme.secondaryColor),
                 ),
-                title: Text(debt['customer']?['name'] ?? 'بدون عميل', style: const TextStyle(fontWeight: FontWeight.bold)),
+                title: Text(debt['customer_name'] ?? 'بدون عميل', style: const TextStyle(fontWeight: FontWeight.bold)),
                 subtitle: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

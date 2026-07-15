@@ -208,17 +208,19 @@ class CustomerProfileScreen extends StatelessWidget {
                       const SizedBox(height: 8),
                       SizedBox(
                         width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: () => controller.sendReminder(),
-                          icon: const Icon(Icons.message, color: Colors.green),
-                          label: const Text(
-                            'إرسال تذكير عبر الواتساب',
-                            style: TextStyle(color: Colors.green),
+                        child: Obx(() => OutlinedButton.icon(
+                          onPressed: controller.isSendingReminder.value ? null : () => controller.sendReminder(),
+                          icon: controller.isSendingReminder.value 
+                            ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.green))
+                            : const Icon(Icons.message, color: Colors.green),
+                          label: Text(
+                            controller.isSendingReminder.value ? 'جاري الإرسال...' : 'إرسال تذكير عبر الواتساب',
+                            style: const TextStyle(color: Colors.green),
                           ),
                           style: OutlinedButton.styleFrom(
                             side: const BorderSide(color: Colors.green),
                           ),
-                        ),
+                        )),
                       ),
                     ],
                   ),

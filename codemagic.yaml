@@ -1,0 +1,23 @@
+workflows:
+  ios-unsigned-build:
+    name: بناء نسخة آيفون بدون توقيع
+    instance_type: mac_mini_m1
+    max_build_duration: 60
+    environment:
+      flutter: stable
+      xcode: latest
+    scripts:
+      - name: جلب حزم فلاتر
+        script: |
+          flutter pub get
+      - name: بناء تطبيق الآيفون (بدون توقيع أبل)
+        script: |
+          flutter build ios --release --no-codesign
+      - name: تحويل التطبيق إلى صيغة ipa
+        script: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          mv Runner.app Payload/
+          zip -qr app.ipa Payload
+    artifacts:
+      - build/ios/iphoneos/app.ipa

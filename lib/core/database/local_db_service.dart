@@ -135,22 +135,33 @@ class LocalDbService {
 
   Future<List<Map<String, dynamic>>> getAllCustomers() async {
     final db = await instance.database;
-    return await db.query('customers', orderBy: 'name ASC');
+    return await db.rawQuery('''
+      SELECT c.*, 
+        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+      FROM customers c 
+      ORDER BY c.name ASC
+    ''');
   }
 
   Future<List<Map<String, dynamic>>> searchCustomers(String query) async {
     final db = await instance.database;
-    return await db.query(
-      'customers',
-      where: 'name LIKE ? OR primary_phone LIKE ?',
-      whereArgs: ['%$query%', '%$query%'],
-      orderBy: 'name ASC',
-    );
+    return await db.rawQuery('''
+      SELECT c.*, 
+        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+      FROM customers c 
+      WHERE c.name LIKE ? OR c.primary_phone LIKE ?
+      ORDER BY c.name ASC
+    ''', ['%$query%', '%$query%']);
   }
 
   Future<Map<String, dynamic>?> getCustomer(int id) async {
     final db = await instance.database;
-    final results = await db.query('customers', where: 'id = ?', whereArgs: [id]);
+    final results = await db.rawQuery('''
+      SELECT c.*, 
+        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+      FROM customers c 
+      WHERE c.id = ?
+    ''', [id]);
     if (results.isNotEmpty) return results.first;
     return null;
   }

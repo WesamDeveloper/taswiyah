@@ -14,7 +14,7 @@ class CustomerProfileController extends GetxController {
   final ApiClient _apiClient = ApiClient();
   final SyncService _syncService = Get.find<SyncService>();
   final LocalDbService _dbService = LocalDbService.instance;
-  final int customerId;
+  int customerId;
 
   var isLoading = true.obs;
   var customer = {}.obs;
@@ -31,12 +31,37 @@ class CustomerProfileController extends GetxController {
   Future<void> fetchProfile() async {
     isLoading.value = true;
     try {
-      final localCust = await _dbService.getCustomer(customerId);
+      var localCust = await _dbService.getCustomer(customerId);
+      
+      // If customer not found and it's a temp ID, the customer might have been synced and ID replaced
+      if (localCust == null && customerId > 1000000000000 && customer.isNotEmpty) {
+        final allCusts = await _dbService.getAllCustomers();
+        final newCust = allCusts.firstWhere(
+          (c) => c['primary_phone'] == customer['primary_phone'], 
+          orElse: () => <String, dynamic>{},
+        );
+        if (newCust.isNotEmpty) {
+          customerId = newCust['id'] as int;
+          localCust = newCust;
+        }
+      }
+
       if (localCust != null) {
         customer.value = localCust;
       }
       final localDebts = await _dbService.getCustomerDebts(customerId);
       final localPayments = await _dbService.getCustomerPayments(customerId);
+
+      double calculatedRemaining = 0.0;
+      for (var d in localDebts) {
+        final amount = double.tryParse(d['amount'].toString()) ?? 0.0;
+        final paid = double.tryParse((d['paid'] ?? 0).toString()) ?? 0.0;
+        calculatedRemaining += (amount - paid);
+      }
+      
+      var custMap = Map<String, dynamic>.from(customer.value);
+      custMap['remaining_balance'] = calculatedRemaining;
+      customer.value = custMap;
 
       _updateTransactionsList(localDebts, localPayments);
     } catch (e) {
@@ -200,16 +225,31 @@ class CustomerProfileController extends GetxController {
     });
   }
 
+  var isSendingReminder = false.obs;
+
   Future<void> sendReminder() async {
-    if (!_syncService.isOnline.value) {
+    if (customerId > 1000000000000) {
       Get.snackbar(
         'تنبيه',
-        'يجب الاتصال بالإنترنت لإرسال تذكير واتساب',
+        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
         backgroundColor: Colors.orange,
         colorText: Colors.white,
       );
       return;
     }
+    if (isSendingReminder.value) return; // Prevent multiple clicks
+    
+    if (!_syncService.isOnline.value) {
+      Get.snackbar(
+        'تنبيه',
+        'يجب الاتصال بالإنترنت لإرسال رسائل الواتساب',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
+      return;
+    }
+    
+    isSendingReminder.value = true;
     try {
       // Pass the locally calculated exact remaining balance to the backend
       // This ensures the reminder is accurate even if there are unsynced transactions
@@ -246,10 +286,21 @@ class CustomerProfileController extends GetxController {
         colorText: Colors.white,
       );
       print("${errorMessage} $e");
+    } finally {
+      isSendingReminder.value = false;
     }
   }
 
   Future<void> updateProfile(String name, String phone) async {
+    if (customerId > 1000000000000) {
+      Get.snackbar(
+        'تنبيه',
+        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
+      return;
+    }
     final payload = {'id': customerId, 'name': name, 'primary_phone': phone};
 
     // Update local immediately
@@ -275,6 +326,15 @@ class CustomerProfileController extends GetxController {
   }
 
   Future<void> updateSchedule(DateTime? date, int? days) async {
+    if (customerId > 1000000000000) {
+      Get.snackbar(
+        'تنبيه',
+        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
+      return;
+    }
     final nextDate = date?.toIso8601String().split('T')[0];
     
     // Update local immediately
@@ -306,6 +366,15 @@ class CustomerProfileController extends GetxController {
   }
 
   Future<void> toggleDebtNotification(bool value) async {
+    if (customerId > 1000000000000) {
+      Get.snackbar(
+        'تنبيه',
+        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
+      return;
+    }
     if (!_syncService.isOnline.value) {
       Get.snackbar(
         'تنبيه',

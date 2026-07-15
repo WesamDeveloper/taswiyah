@@ -164,7 +164,13 @@ class SyncService extends GetxService {
         });
         return true; // Sent to server successfully
       } catch (e) {
-        // Fallback to queue if server fails but internet is somewhat available
+        if (e is DioException && e.response != null) {
+          final statusCode = e.response!.statusCode;
+          if (statusCode != null && statusCode >= 400 && statusCode < 500) {
+            rethrow; // Don't queue client errors (like 422 duplicate), they will never succeed
+          }
+        }
+        // Fallback to queue if server fails (e.g. 500) or internet drops
         await _dbService.addToSyncQueue(operation, jsonEncode(payload));
         return false;
       }

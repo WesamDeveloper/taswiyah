@@ -68,10 +68,10 @@ class CustomersController extends GetxController {
       return false;
     }
 
-    final payload = {'name': name, 'primary_phone': phone};
+    final tempId = DateTime.now().millisecondsSinceEpoch;
+    final payload = {'name': name, 'primary_phone': phone, 'temp_id': tempId};
     
     // Save locally first for instant UI response
-    final tempId = DateTime.now().millisecondsSinceEpoch;
     final localCustomer = {
       'id': tempId, // Temporary ID, will be replaced when synced if possible
       'name': name,
@@ -89,6 +89,9 @@ class CustomersController extends GetxController {
         payload,
       );
 
+      // CRITICAL: Refresh local list again because sync might have replaced the temp ID with real ID
+      await _refreshLocalList();
+
       if (success) {
         Get.snackbar('نجاح', 'تم إرسال بيانات العميل', backgroundColor: Colors.green, colorText: Colors.white);
       } else {
@@ -96,15 +99,27 @@ class CustomersController extends GetxController {
       }
       return true; // Return true to close dialog
     } catch (e) {
+      if (e is DioException && e.response?.statusCode == 422) {
+        // Validation/Duplicate error. Remove the local temp copy we just created.
+        await _dbService.deleteCustomer(tempId);
+        await _refreshLocalList();
+        Get.snackbar('خطأ', e.response?.data['message'] ?? 'يوجد عميل مسجل مسبقاً', backgroundColor: Colors.red, colorText: Colors.white);
+        return false; // Don't close dialog, let user fix it
+      }
+      await _refreshLocalList();
       return true; // Even if it fails, it's added locally, so close dialog
     }
   }
 
+  var isSendingReminder = false.obs;
+
   Future<void> sendToAll() async {
+    if (isSendingReminder.value) return;
     if (!_syncService.isOnline.value) {
       Get.snackbar('تنبيه', 'يجب الاتصال بالإنترنت لإرسال تذكير جماعي عبر الواتساب', backgroundColor: Colors.orange, colorText: Colors.white);
       return;
     }
+    isSendingReminder.value = true;
     try {
       final response = await _apiClient.post('/customers/remind-all', {});
       if (response.statusCode == 200) {
@@ -122,10 +137,13 @@ class CustomersController extends GetxController {
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
+    } finally {
+      isSendingReminder.value = false;
     }
   }
 
   Future<void> sendToGroup() async {
+    if (isSendingReminder.value) return;
     if (!_syncService.isOnline.value) {
       Get.snackbar('تنبيه', 'يجب الاتصال بالإنترنت لإرسال رسائل الواتساب', backgroundColor: Colors.orange, colorText: Colors.white);
       return;
@@ -134,11 +152,18 @@ class CustomersController extends GetxController {
       sendToAll();
       return;
     }
+    isSendingReminder.value = true;
     try {
+      final validIds = selectedCustomers.where((id) => id < 1000000000000).toList();
+      if (validIds.isEmpty) {
+        Get.snackbar('تنبيه', 'العملاء المحددين غير مزامنين مع السيرفر بعد', backgroundColor: Colors.orange, colorText: Colors.white);
+        isSendingReminder.value = false;
+        return;
+      }
       final response = await _apiClient.post(
         '/customers/remind-group',
         {},
-        data: {'customer_ids': selectedCustomers.toList()},
+        data: {'customer_ids': validIds},
       );
       if (response.statusCode == 200) {
         Get.snackbar(
@@ -152,10 +177,12 @@ class CustomersController extends GetxController {
     } catch (e) {
       Get.snackbar(
         'خطأ',
-        'فشل الإرسال للمجموعة',
+        'فشل إرسال التذكير للمجموعة المحددة',
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
+    } finally {
+      isSendingReminder.value = false;
     }
   }
 
@@ -198,6 +225,11 @@ class CustomersController extends GetxController {
     // Remove locally
     await _dbService.deleteCustomer(id);
     _refreshLocalList();
+
+    if (id > 1000000000000) {
+      // It was a local-only customer, no need to contact server
+      return;
+    }
 
     if (_syncService.isOnline.value) {
       try {
