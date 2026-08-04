@@ -51,4 +51,5 @@ jobs:
           firebase appdistribution:distribute build/app/outputs/flutter-apk/app-release.apk \
            --app "1:834542394874:android:115955d80ed90131915843" \
            --testers "tik38039@gmail.com" \
-           --release-notes "test 3"
+           RELEASE_NOTES=$(git log -1 --pretty=%B | tr '\n' ' ' | xargs)
+           --release-notes "$RELEASE_NOTES"
