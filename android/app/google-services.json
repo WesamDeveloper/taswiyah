@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "834542394874",
+    "project_id": "fir-app-distribution-f3058",
+    "storage_bucket": "fir-app-distribution-f3058.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:834542394874:android:115955d80ed90131915843",
+        "android_client_info": {
+          "package_name": "com.example.deyoun"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyClkH_7lYMp6whjh1icJTxILmyp4soAZEU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

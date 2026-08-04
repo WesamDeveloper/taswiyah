@@ -1,0 +1,21 @@
+default_platform(:android)
+
+platform :android do
+  desc "Build and distribute Android app to Firebase"
+  lane :distribute_to_firebase do
+    # Build the Flutter app
+    sh "flutter clean"
+    sh "flutter build apk --release --no-tree-shake-icons"
+    
+    # Upload to Firebase App Distribution
+    firebase_app_distribution(
+      app: "",
+      testers: "",
+      release_notes: "",
+      android_artifact_type: "APK",
+      android_artifact_path: "../build/app/outputs/flutter-apk/app-release.apk",
+      upload_timeout: 800,
+      service_credentials_file: "C:/s.json"
+    )
+  end
+end
