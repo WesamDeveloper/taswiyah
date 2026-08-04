@@ -70,7 +70,7 @@ class _SplashScreenState extends State<SplashScreen> {
             const SizedBox(height: 8),
 
             Text(
-                  'نظام إدارة التحصيلات والديون',
+                  'نظام إدارة التحصيلات و الديون',
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
                 )
                 .animate()
