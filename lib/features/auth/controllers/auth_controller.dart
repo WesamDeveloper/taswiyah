@@ -1,12 +1,14 @@
 import 'package:dio/dio.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/database/local_db_service.dart';
 import '../../../core/network/api_client.dart';
 import '../../../core/network/endpoints.dart';
 import '../../../core/network/sync_service.dart';
-import '../../../core/database/local_db_service.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import '../presentation/activation_screen.dart';
 
@@ -25,10 +27,44 @@ class AuthController extends GetxController {
   var isPasswordHidden = true.obs;
   var autoRemindDay = Rx<int?>(null);
 
+  RxString base = 'GG'.obs;
+
   @override
   void onInit() {
     super.onInit();
+    initRemoteConfig();
     _loadAutoRemindDay();
+  }
+
+  Future<void> initRemoteConfig() async {
+    final remoteConfig = FirebaseRemoteConfig.instance;
+    await remoteConfig.setConfigSettings(
+      RemoteConfigSettings(
+        fetchTimeout: const Duration(seconds: 10),
+        minimumFetchInterval: const Duration(seconds: 1),
+      ),
+    );
+    await remoteConfig.setDefaults({'base': "Default title"});
+    try {
+      final updated = await remoteConfig.fetchAndActivate();
+      print("Updated = $updated");
+      print(remoteConfig.getString("base"));
+    } on FirebaseException catch (e) {
+      print("CODE: ${e.code}");
+      print("MESSAGE: ${e.message}");
+    } catch (e, s) {
+      print(e);
+      print(s);
+    }
+
+    print("Controller Hash: ${hashCode}");
+
+    await remoteConfig.fetchAndActivate();
+
+    base.value = remoteConfig.getString("base");
+
+    print("Base = ${base.value}");
+    print("Controller Hash After = ${hashCode}");
   }
 
   Future<void> _loadAutoRemindDay() async {
@@ -44,6 +80,7 @@ class AuthController extends GetxController {
   }
 
   Future<void> login() async {
+    //   throw Exception();
     if (emailController.text.isEmpty || passwordController.text.isEmpty) {
       Get.snackbar(
         'تنبيه',
@@ -70,7 +107,7 @@ class AuthController extends GetxController {
       if (response.statusCode == 200 && response.data['access_token'] != null) {
         final token = response.data['access_token'];
         final isActivated = response.data['user']['is_activated'] ?? false;
-        
+
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('access_token', token);
         await prefs.setBool('is_activated', isActivated);
@@ -152,7 +189,10 @@ class AuthController extends GetxController {
         final token = response.data['access_token'];
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('access_token', token);
-        await prefs.setBool('is_activated', false); // New users are not activated
+        await prefs.setBool(
+          'is_activated',
+          false,
+        ); // New users are not activated
 
         Get.offAll(() => ActivationScreen());
       }
@@ -210,7 +250,12 @@ class AuthController extends GetxController {
 
   Future<void> activateAccount(String code) async {
     if (code.isEmpty) {
-      Get.snackbar('تنبيه', 'يرجى إدخال كود التفعيل', backgroundColor: Colors.orange.withOpacity(0.9), colorText: Colors.white);
+      Get.snackbar(
+        'تنبيه',
+        'يرجى إدخال كود التفعيل',
+        backgroundColor: Colors.orange.withOpacity(0.9),
+        colorText: Colors.white,
+      );
       return;
     }
 
@@ -227,21 +272,21 @@ class AuthController extends GetxController {
       if (response.statusCode == 200) {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setBool('is_activated', true);
-        
+
         Get.snackbar(
           'نجاح',
           'تم تفعيل الحساب بنجاح! مرحباً بك.',
           backgroundColor: Colors.green,
           colorText: Colors.white,
         );
-        
+
         if (Get.isRegistered<SyncService>()) {
           await Get.find<SyncService>().performInitialSync();
         } else {
           final syncService = Get.put(SyncService());
           await syncService.performInitialSync();
         }
-        
+
         Get.offAll(() => DashboardScreen());
       }
     } on DioException catch (e) {
@@ -263,7 +308,12 @@ class AuthController extends GetxController {
       );
     } catch (e) {
       errorMessage.value = 'خطأ غير متوقع';
-      Get.snackbar('خطأ', errorMessage.value, backgroundColor: Colors.red, colorText: Colors.white);
+      Get.snackbar(
+        'خطأ',
+        errorMessage.value,
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
     } finally {
       isLoading.value = false;
     }
@@ -304,25 +354,43 @@ class AuthController extends GetxController {
 
   Future<bool> forgotPassword(String email) async {
     if (email.isEmpty) {
-      Get.snackbar('تنبيه', 'يرجى إدخال البريد الإلكتروني', backgroundColor: Colors.orange, colorText: Colors.white);
+      Get.snackbar(
+        'تنبيه',
+        'يرجى إدخال البريد الإلكتروني',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
       return false;
     }
-    
+
     isLoading.value = true;
     errorMessage.value = '';
     try {
-      final response = await _apiClient.post('/auth/forgot-password', {}, data: {'email': email});
+      final response = await _apiClient.post(
+        '/auth/forgot-password',
+        {},
+        data: {'email': email},
+      );
       if (response.statusCode == 200) {
-        Get.snackbar('نجاح', response.data['message'], backgroundColor: Colors.green, colorText: Colors.white);
+        Get.snackbar(
+          'نجاح',
+          response.data['message'],
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
         return true;
       }
     } on DioException catch (e) {
       errorMessage.value = e.response?.data['message'] ?? 'فشل طلب الاستعادة';
-      Get.snackbar('خطأ', errorMessage.value, backgroundColor: Colors.red, colorText: Colors.white);
+      Get.snackbar(
+        'خطأ',
+        errorMessage.value,
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
     } finally {
       isLoading.value = false;
     }
     return false;
   }
-
 }

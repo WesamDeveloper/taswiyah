@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:get/get.dart';
-
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../controllers/auth_controller.dart';
-import 'register_screen.dart';
 import 'forgot_password_screen.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatelessWidget {
   LoginScreen({Key? key}) : super(key: key);
@@ -16,6 +15,7 @@ class LoginScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    print("Login Controller Hash: ${_authController.hashCode}");
     return Scaffold(
       backgroundColor: AppTheme.backgroundLight,
       body: SafeArea(
@@ -69,29 +69,35 @@ class LoginScreen extends StatelessWidget {
                 const SizedBox(height: 16),
 
                 // Password Input
-                Obx(() => TextField(
-                  controller: _authController.passwordController,
-                  decoration: InputDecoration(
-                    labelText: 'كلمة المرور',
-                    prefixIcon: const Icon(Icons.lock_outline),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _authController.isPasswordHidden.value 
-                          ? Icons.visibility_off 
-                          : Icons.visibility,
+                Obx(
+                  () => TextField(
+                    controller: _authController.passwordController,
+                    decoration: InputDecoration(
+                      labelText: 'كلمة المرور',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _authController.isPasswordHidden.value
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                        ),
+                        onPressed: () =>
+                            _authController.togglePasswordVisibility(),
                       ),
-                      onPressed: () => _authController.togglePasswordVisibility(),
                     ),
+                    obscureText: _authController.isPasswordHidden.value,
+                    textDirection: TextDirection.ltr,
                   ),
-                  obscureText: _authController.isPasswordHidden.value,
-                  textDirection: TextDirection.ltr,
-                )).animate().fade(delay: 700.ms).slideX(begin: 0.1, end: 0),
+                ).animate().fade(delay: 700.ms).slideX(begin: 0.1, end: 0),
 
                 Align(
                   alignment: Alignment.centerLeft,
                   child: TextButton(
                     onPressed: () => Get.to(() => ForgotPasswordScreen()),
-                    child: Text('نسيت كلمة المرور؟', style: TextStyle(color: Colors.grey.shade700)),
+                    child: Text(
+                      'نسيت كلمة المرور؟',
+                      style: TextStyle(color: Colors.grey.shade700),
+                    ),
                   ),
                 ).animate().fade(delay: 750.ms),
 
@@ -112,7 +118,11 @@ class LoginScreen extends StatelessWidget {
                               strokeWidth: 2,
                             ),
                           )
-                        : const Text('تسجيل الدخول'),
+                        : Obx(() {
+                            print("UI Value = ${_authController.base.value}");
+                            return Text(_authController.base.value);
+                          }),
+                    //: const Text('تسجيل الدخول'),
                   ),
                 ).animate().fade(delay: 800.ms).scale(),
 
@@ -128,12 +138,14 @@ class LoginScreen extends StatelessWidget {
                     ),
                   ),
                 ).animate().fade(delay: 900.ms),
-                
+
                 const SizedBox(height: 16),
-                
+
                 TextButton.icon(
                   onPressed: () async {
-                    final uri = Uri.parse('whatsapp://send?phone=+967775904988');
+                    final uri = Uri.parse(
+                      'whatsapp://send?phone=+967775904988',
+                    );
                     if (await canLaunchUrl(uri)) {
                       await launchUrl(uri);
                     } else {
@@ -143,7 +155,10 @@ class LoginScreen extends StatelessWidget {
                   icon: const Icon(Icons.support_agent, color: Colors.green),
                   label: const Text(
                     'التواصل مع خدمة العملاء',
-                    style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.green,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ).animate().fade(delay: 1000.ms),
               ],

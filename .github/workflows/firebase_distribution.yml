@@ -1,19 +1,38 @@
-name: Android Firebase Distribution
+# .github/workflows/firebase_distribution.yml
+name: Production Firebase Distribution
 
+# ------------------------------------------------------------------------------
+# TRIGGER CONFIGURATION
+# - Pushes to the `main` branch ONLY
+# - Git tags starting with `v` (e.g., v1.0.0, v1.2.5)
+# ------------------------------------------------------------------------------
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
+    branches:
+      - main
+
+# Cancel redundant running jobs to save minutes
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   distribute:
-    if: |
-      startsWith(github.ref, 'refs/tags/v') ||
-      contains(github.event.head_commit.message, '[wesam]')
-
+    name: Build & Distribute
+    # --------------------------------------------------------------------------
+    # JOB CONDITION
+    # Run ONLY if:
+    # 1. It's a push to main AND commit message contains "[wesam]"
+    # OR
+    # 2. It's a tag push starting with "v"
+    # --------------------------------------------------------------------------
+    if: >
+      (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[wesam]')) ||
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Repository
@@ -21,42 +40,138 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Java
+      # Simplified Build Type Logic: Tag -> AAB | [wesam] -> APK
+      - name: Determine Build Type
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "BUILD_CMD=appbundle" >> "$GITHUB_ENV"
+            echo "ARTIFACT_PATH=build/app/outputs/bundle/release/app-release.aab" >> "$GITHUB_ENV"
+            echo "FILE_EXT=.aab" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_CMD=apk" >> "$GITHUB_ENV"
+            echo "ARTIFACT_PATH=build/app/outputs/flutter-apk/app-release.apk" >> "$GITHUB_ENV"
+            echo "FILE_EXT=.apk" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup Java Temurin
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 17
+          distribution: 'temurin'
+          java-version: '17'
 
-      - name: Setup Flutter
+      # Caches Flutter SDK automatically
+      - name: Setup Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: 'stable'
           cache: true
 
-      - name: Cache Flutter Packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-pub-
+      - name: Extract Release Notes
+        run: |
+          set -euo pipefail
+          EOF_DELIMITER=$(openssl rand -hex 16)
+          echo "RELEASE_NOTES<<${EOF_DELIMITER}" >> "$GITHUB_ENV"
+          git log -1 --pretty=format:"%B" >> "$GITHUB_ENV"
+          echo "" >> "$GITHUB_ENV"
+          echo "${EOF_DELIMITER}" >> "$GITHUB_ENV"
 
-      - name: Install Flutter Packages
+      - name: Fetch Flutter Dependencies
         run: flutter pub get
 
+      - name: Build Flutter App
+        run: flutter build ${{ env.BUILD_CMD }} --release --no-tree-shake-icons
+
+      # Dynamically generate Fastlane architecture
+      - name: Generate Fastlane Files
+        working-directory: android
+        run: |
+          set -euo pipefail
+          mkdir -p fastlane
+
+          cat << 'EOF' > Gemfile
+          source "https://rubygems.org"
+          gem "fastlane", ">= 2.225.0"
+          plugins_path = File.join(File.dirname(__FILE__), 'fastlane', 'Pluginfile')
+          eval_gemfile(plugins_path) if File.exist?(plugins_path)
+          EOF
+
+          cat << 'EOF' > fastlane/Pluginfile
+          gem 'fastlane-plugin-firebase_app_distribution', ">= 0.12.0"
+          EOF
+
+          cat << 'EOF' > fastlane/Fastfile
+          default_platform(:android)
+
+          platform :android do
+            desc "Distribute artifact to Firebase"
+            lane :distribute do
+              artifact_path = "../#{ENV['ARTIFACT_PATH']}"
+          
+              if ENV['FILE_EXT'] == '.aab'
+                firebase_app_distribution(
+                  app: ENV['FIREBASE_APP_ID'],
+                  testers: ENV['FIREBASE_TESTERS'],
+                  release_notes: ENV['RELEASE_NOTES'],
+                  service_credentials_file: ENV['GOOGLE_APPLICATION_CREDENTIALS'],
+                  aab_path: artifact_path
+                )
+              else
+                firebase_app_distribution(
+                  app: ENV['FIREBASE_APP_ID'],
+                  testers: ENV['FIREBASE_TESTERS'],
+                  release_notes: ENV['RELEASE_NOTES'],
+                  service_credentials_file: ENV['GOOGLE_APPLICATION_CREDENTIALS'],
+                  apk_path: artifact_path
+                )
+              end
+            end
+          end
+          EOF
+
+      # Ruby setup without unsupported working-directory
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
-          bundler-cache: true
 
-      - name: Authenticate Google Cloud
+      # Cache explicitly scoped to the android/vendor/bundle path
+      - name: Cache Bundler dependencies
+        uses: actions/cache@v4
+        with:
+          path: android/vendor/bundle
+          key: ${{ runner.os }}-gems-${{ hashFiles('.github/workflows/firebase_distribution.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-gems-
+
+      # Manual bundler installation targeting the cached directory
+      - name: Install Fastlane & Plugins
+        working-directory: android
+        run: |
+          set -euo pipefail
+          bundle config set path vendor/bundle
+          bundle install --jobs 4 --retry 3
+
+      # Safely injects credentials and sets GOOGLE_APPLICATION_CREDENTIALS globally
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
 
-      - name: Firebase Distribution
+      - name: Upload to Firebase App Distribution
         working-directory: android
-        run: bundle exec fastlane dist_to_firebase
+        timeout-minutes: 15
+        env:
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_TESTERS: ${{ vars.FIREBASE_TESTERS }}
+          FASTLANE_OPT_OUT_USAGE: true
+          FASTLANE_HIDE_CHANGELOG: true
+        run: bundle exec fastlane distribute
+
+      - name: Upload GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-artifact${{ env.FILE_EXT }}
+          path: ${{ env.ARTIFACT_PATH }}
+          retention-days: 7
+          if-no-files-found: error
