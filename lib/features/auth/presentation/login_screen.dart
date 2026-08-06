@@ -131,7 +131,7 @@ class LoginScreen extends StatelessWidget {
                 TextButton(
                   onPressed: () => Get.to(() => RegisterScreen()),
                   child: const Text(
-                    'ليس لديك حساب؟ إنشاء حساب مجاني',
+                    'ليس لديك حساب؟إنشاء حساب مجاني',
                     style: TextStyle(
                       color: AppTheme.primaryColor,
                       fontWeight: FontWeight.bold,
