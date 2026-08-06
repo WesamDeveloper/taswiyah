@@ -1,9 +1,15 @@
 # .github/workflows/firebase_distribution.yml
 name: Production Firebase Distribution
 
+# ------------------------------------------------------------------------------
+# TRIGGER CONFIGURATION
+# - Pushes to the `main` branch ONLY
+# - Git tags starting with `v` (e.g., v1.0.0, v1.2.5)
+# ------------------------------------------------------------------------------
 on:
-  workflow_dispatch:
   push:
+    tags:
+      - 'v*'
     branches:
       - main
 

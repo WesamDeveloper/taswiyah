@@ -1,0 +1,83 @@
+name: Android Fastlane Firebase App Distribution Workflow
+on:
+  push:
+    branches: main
+  workflow_dispatch:
+
+jobs:
+  fastlane_distribute_to_Firebase:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Set up Ruby for Fastlane
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: false
+
+      - name: Create Fastlane files
+        run: |
+          mkdir -p android/fastlane
+          
+          cat > android/Gemfile << 'EOF'
+          source "https://rubygems.org"
+          
+          gem "fastlane"
+          gem "fastlane-plugin-firebase_app_distribution"
+          EOF
+          
+          cat > android/fastlane/Fastfile << 'FASTFILE'
+          default_platform(:android)
+          
+          platform :android do
+            desc "Builds and distributes the app to Firebase App Distribution"
+            lane :dist_to_firebase do
+              sh "flutter clean"
+              sh "flutter build apk --release --no-tree-shake-icons"
+          
+              release_notes = sh("git log -1 --pretty=%B").strip
+          
+              firebase_app_distribution(
+                app: "1:834542394874:android:115955d80ed90131915843",
+                android_artifact_type: "APK",
+                android_artifact_path: "../build/app/outputs/flutter-apk/app-release.apk",
+                testers: "tik38039@gmail.com" ,
+                release_notes: release_notes,
+                upload_timeout: 600
+              )
+            end
+          end
+          FASTFILE
+
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+      - name: Distribute to Firebase with Fastlane
+        run: |
+          cd android
+          bundle install
+          bundle exec fastlane dist_to_firebase
