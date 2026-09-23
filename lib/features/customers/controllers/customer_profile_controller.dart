@@ -1,26 +1,32 @@
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../core/database/local_db_service.dart';
-import '../../../core/network/api_client.dart';
-import '../../../core/network/sync_service.dart';
 import '../../../core/services/export_service.dart';
 import '../../dashboard/controllers/dashboard_controller.dart';
 import '../../debts/controllers/debts_controller.dart';
 import '../controllers/customers_controller.dart';
 
 class CustomerProfileController extends GetxController {
-  final ApiClient _apiClient = ApiClient();
-  final SyncService _syncService = Get.find<SyncService>();
   final LocalDbService _dbService = LocalDbService.instance;
-  int customerId;
+  static const Uuid _uuid = Uuid();
+  final String customerId;
 
-  var isLoading = true.obs;
-  var customer = {}.obs;
-  var debts = [].obs;
-  var transactions = [].obs;
-  CustomerProfileController(this.customerId);
+  var isLoading = false.obs;
+  var customer = <String, dynamic>{}.obs;
+  var debts = <Map<String, dynamic>>[].obs;
+  var transactions = <Map<String, dynamic>>[].obs;
+
+  // Pagination (5 items per batch)
+  static const int pageSize = 5;
+  var displayedTransactions = <Map<String, dynamic>>[].obs;
+  var hasMoreTransactions = false.obs;
+  var isLoadingMore = false.obs;
+  List<Map<String, dynamic>> _allTransactions = [];
+
+  CustomerProfileController(dynamic id) : customerId = id.toString();
 
   @override
   void onInit() {
@@ -29,26 +35,13 @@ class CustomerProfileController extends GetxController {
   }
 
   Future<void> fetchProfile() async {
-    isLoading.value = true;
     try {
-      var localCust = await _dbService.getCustomer(customerId);
-      
-      // If customer not found and it's a temp ID, the customer might have been synced and ID replaced
-      if (localCust == null && customerId > 1000000000000 && customer.isNotEmpty) {
-        final allCusts = await _dbService.getAllCustomers();
-        final newCust = allCusts.firstWhere(
-          (c) => c['primary_phone'] == customer['primary_phone'], 
-          orElse: () => <String, dynamic>{},
-        );
-        if (newCust.isNotEmpty) {
-          customerId = newCust['id'] as int;
-          localCust = newCust;
-        }
-      }
+      final localCust = await _dbService.getCustomer(customerId);
 
       if (localCust != null) {
-        customer.value = localCust;
+        customer.assignAll(localCust);
       }
+
       final localDebts = await _dbService.getCustomerDebts(customerId);
       final localPayments = await _dbService.getCustomerPayments(customerId);
 
@@ -58,14 +51,13 @@ class CustomerProfileController extends GetxController {
         final paid = double.tryParse((d['paid'] ?? 0).toString()) ?? 0.0;
         calculatedRemaining += (amount - paid);
       }
-      
-      var custMap = Map<String, dynamic>.from(customer.value);
-      custMap['remaining_balance'] = calculatedRemaining;
-      customer.value = custMap;
+
+      customer['remaining_balance'] = calculatedRemaining < 0 ? 0.0 : calculatedRemaining;
+      customer.refresh();
 
       _updateTransactionsList(localDebts, localPayments);
     } catch (e) {
-      Get.snackbar('خطأ', 'فشل تحميل بيانات العميل');
+      debugPrint('Customer profile fetch note: $e');
     } finally {
       isLoading.value = false;
     }
@@ -75,10 +67,9 @@ class CustomerProfileController extends GetxController {
     List<Map<String, dynamic>> dList,
     List<Map<String, dynamic>> pList,
   ) {
-    debts.value =
-        dList; // Keep debts for legacy logic if needed (like FIFO payments)
+    debts.assignAll(dList);
 
-    List combined = [];
+    List<Map<String, dynamic>> combined = [];
     for (var d in dList) {
       final map = Map<String, dynamic>.from(d);
       map['tx_type'] = 'debt';
@@ -91,26 +82,46 @@ class CustomerProfileController extends GetxController {
     }
 
     combined.sort((a, b) {
-      String dateA = a['created_at'] ?? '';
-      String dateB = b['created_at'] ?? '';
-      return dateB.compareTo(dateA); // DESC
+      String dateA = a['created_at']?.toString() ?? '';
+      String dateB = b['created_at']?.toString() ?? '';
+      return dateB.compareTo(dateA); // DESC (Newest first)
     });
 
-    transactions.value = combined;
+    _allTransactions = combined;
+    transactions.assignAll(combined);
+
+    // Initialize first batch of 5 items
+    displayedTransactions.assignAll(_allTransactions.take(pageSize).toList());
+    hasMoreTransactions.value = _allTransactions.length > displayedTransactions.length;
+
+    debts.refresh();
+    transactions.refresh();
+    displayedTransactions.refresh();
+  }
+
+  /// Loads the next batch of 5 transactions on scroll
+  Future<void> loadMoreTransactions() async {
+    if (isLoadingMore.value || !hasMoreTransactions.value) return;
+
+    isLoadingMore.value = true;
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    final currentCount = displayedTransactions.length;
+    final nextBatch = _allTransactions.skip(currentCount).take(pageSize).toList();
+    displayedTransactions.addAll(nextBatch);
+    hasMoreTransactions.value = displayedTransactions.length < _allTransactions.length;
+    isLoadingMore.value = false;
   }
 
   Future<void> addDebt(double amount, String notes) async {
-    final tempId = DateTime.now().millisecondsSinceEpoch;
-    final payload = {
-      'customer_id': customerId,
-      'amount': amount,
-      'notes': notes,
-      'temp_id': tempId,
-    };
+    if (amount <= 0) {
+      Get.snackbar('تنبيه', 'يجب أن يكون مبلغ الدين أكبر من الصفر');
+      return;
+    }
 
-    // Save locally
+    final newDebtId = _uuid.v4();
     final localDebt = {
-      'id': tempId,
+      'id': newDebtId,
       'customer_id': customerId,
       'amount': amount,
       'paid': 0.0,
@@ -118,14 +129,9 @@ class CustomerProfileController extends GetxController {
       'notes': notes,
       'created_at': DateTime.now().toIso8601String(),
     };
-    await _dbService.saveDebt(localDebt, isSynced: false);
 
-    // Update local remaining balance
-    final cust = Map<String, dynamic>.from(customer.value);
-    cust['remaining_balance'] = (cust['remaining_balance'] ?? 0) + amount;
-    await _dbService.saveCustomer(cust);
-
-    fetchProfile();
+    await _dbService.saveDebt(localDebt);
+    await fetchProfile();
 
     if (Get.isRegistered<CustomersController>()) {
       Get.find<CustomersController>().fetchCustomers();
@@ -137,282 +143,119 @@ class CustomerProfileController extends GetxController {
       Get.find<DashboardController>().fetchStats();
     }
 
-    _syncService.executeOrQueue('add_debt', payload).then((success) {
-      if (success) {
-        Get.snackbar(
-          'نجاح',
-          'تم تسجيل الدين وإشعار العميل',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
-      }
-    });
+    Get.snackbar(
+      'نجاح',
+      'تم تسجيل الدين محلياً بنجاح',
+      backgroundColor: Colors.green,
+      colorText: Colors.white,
+    );
   }
 
+  /// Atomic FIFO payment reception
   Future<void> receivePayment(double amount) async {
-    final tempPaymentId = DateTime.now().millisecondsSinceEpoch;
-    final payload = {'amount': amount, 'customer_id': customerId, 'temp_id': tempPaymentId};
+    if (amount <= 0) {
+      Get.snackbar('تنبيه', 'يجب أن يكون مبلغ السداد أكبر من الصفر');
+      return;
+    }
 
-    // Update local remaining balance
-    final cust = Map<String, dynamic>.from(customer.value);
-    cust['remaining_balance'] = (cust['remaining_balance'] ?? 0) - amount;
-    await _dbService.saveCustomer(cust);
+    try {
+      await _dbService.recordPaymentTransaction(
+        customerId: customerId,
+        amount: amount,
+      );
 
-    // Update local debts to reflect payment (FIFO)
-    double remainingPayment = amount;
-    final localDebts = List<Map<String, dynamic>>.from(await _dbService.getCustomerDebts(customerId));
-    // Sort debts ascending by created_at to pay oldest first
-    localDebts.sort(
-      (a, b) => (a['created_at'] ?? '').compareTo(b['created_at'] ?? ''),
-    );
+      await fetchProfile();
 
-    for (var debt in localDebts) {
-      if (remainingPayment <= 0) break;
-
-      final mutableDebt = Map<String, dynamic>.from(debt);
-      double debtAmount = double.parse((mutableDebt['amount'] ?? 0).toString());
-      double debtPaid = double.parse((mutableDebt['paid'] ?? 0).toString());
-      double debtRemaining = debtAmount - debtPaid;
-
-      if (debtRemaining > 0) {
-        double amountToApply = remainingPayment >= debtRemaining
-            ? debtRemaining
-            : remainingPayment;
-        mutableDebt['paid'] = debtPaid + amountToApply;
-        if (mutableDebt['paid'] >= debtAmount) {
-          mutableDebt['status'] = 'paid';
-        } else {
-          mutableDebt['status'] = 'partially_paid';
-        }
-        await _dbService.saveDebt(
-          mutableDebt,
-          isSynced: false,
-        ); // save updated debt
-        remainingPayment -= amountToApply;
+      if (Get.isRegistered<CustomersController>()) {
+        Get.find<CustomersController>().fetchCustomers();
       }
-    }
-
-    // Save local payment record to make it visible in history
-    final localPayment = {
-      'id': tempPaymentId,
-      'customer_id': customerId,
-      'amount': amount,
-      'created_at': DateTime.now().toIso8601String(),
-    };
-    await _dbService.savePayment(localPayment, isSynced: false);
-
-    fetchProfile();
-
-    if (Get.isRegistered<CustomersController>()) {
-      Get.find<CustomersController>().fetchCustomers();
-    }
-    if (Get.isRegistered<DebtsController>()) {
-      Get.find<DebtsController>().fetchDebts();
-    }
-    if (Get.isRegistered<DashboardController>()) {
-      Get.find<DashboardController>().fetchStats();
-    }
-
-    _syncService.executeOrQueue('add_payment', payload).then((success) {
-      if (success) {
-        Get.snackbar(
-          'نجاح',
-          'تم خصم المبلغ من الديون',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
+      if (Get.isRegistered<DebtsController>()) {
+        Get.find<DebtsController>().fetchDebts();
       }
-    });
+      if (Get.isRegistered<DashboardController>()) {
+        Get.find<DashboardController>().fetchStats();
+      }
+
+      Get.snackbar(
+        'نجاح',
+        'تم تسجيل الدفعة وتسوية الأرصدة بنجاح (FIFO)',
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
+      );
+    } catch (e) {
+      Get.snackbar(
+        'خطأ',
+        'فشل تسجيل الدفعة: $e',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+    }
   }
 
   var isSendingReminder = false.obs;
 
+  /// Sends reminder directly via WhatsApp using local url_launcher
   Future<void> sendReminder() async {
-    if (customerId > 1000000000000) {
-      Get.snackbar(
-        'تنبيه',
-        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
-      return;
-    }
-    if (isSendingReminder.value) return; // Prevent multiple clicks
-    
-    if (!_syncService.isOnline.value) {
-      Get.snackbar(
-        'تنبيه',
-        'يجب الاتصال بالإنترنت لإرسال رسائل الواتساب',
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
-      return;
-    }
-    
-    isSendingReminder.value = true;
-    try {
-      // Pass the locally calculated exact remaining balance to the backend
-      // This ensures the reminder is accurate even if there are unsynced transactions
-      final currentCustomer = customer.value;
-      final remaining = double.parse(
-        (currentCustomer['remaining_balance'] ?? 0).toString(),
-      );
-      final phone = currentCustomer['primary_phone'];
-      final name = currentCustomer['name'];
+    final currentCustomer = customer;
+    final remaining = double.tryParse((currentCustomer['remaining_balance'] ?? 0).toString()) ?? 0.0;
+    final phone = currentCustomer['primary_phone']?.toString().trim() ?? '';
+    final name = currentCustomer['name']?.toString() ?? 'عميلنا العزيز';
 
-      final response = await _apiClient.post('/customers/$customerId/remind', {
-        'remaining': remaining,
-        'phone': phone,
-        'name': name,
-      });
-      if (response.statusCode == 200) {
-        Get.snackbar(
-          'نجاح',
-          'تم إرسال التذكير بنجاح عبر الواتساب',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
+    if (remaining <= 0) {
+      Get.snackbar('تنبيه', 'لا يوجد رصيد متبقي على هذا العميل', backgroundColor: Colors.orange, colorText: Colors.white);
+      return;
+    }
+
+    if (phone.isEmpty) {
+      Get.snackbar('خطأ', 'رقم هاتف العميل غير متوفر', backgroundColor: Colors.red, colorText: Colors.white);
+      return;
+    }
+
+    String formattedPhone = phone.replaceAll(RegExp(r'\D'), '');
+    if (formattedPhone.length == 9 && formattedPhone.startsWith('7')) {
+      formattedPhone = '967$formattedPhone';
+    } else if (formattedPhone.length == 10 && formattedPhone.startsWith('05')) {
+      formattedPhone = '966${formattedPhone.substring(1)}';
+    }
+
+    final message = "📄 *تذكير رصيد مستحق*\n\n"
+        "مرحباً *$name*،\n"
+        "نود تذكيركم بأن الرصيد المتبقي المستحق عليكم هو: *${remaining.toStringAsFixed(0)} ر.ي*.\n"
+        "يرجى التكرم بالسداد عند الاستطاعة. شكراً لتعاملكم معنا!";
+
+    final uri = Uri.parse("https://wa.me/$formattedPhone?text=${Uri.encodeComponent(message)}");
+
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        Get.snackbar('تنبيه', 'تعذر فتح تطبيق الواتساب مباشرة', backgroundColor: Colors.orange, colorText: Colors.white);
       }
     } catch (e) {
-      String errorMessage =
-          'فشل إرسال التذكير عبر الواتساب. تأكد من ربط الحساب برقم صحيح.';
-      if (e is DioException && e.response?.data != null) {
-        errorMessage = e.response?.data['message'] ?? errorMessage;
-      }
-      Get.snackbar(
-        'خطأ',
-        errorMessage,
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-      print("${errorMessage} $e");
-    } finally {
-      isSendingReminder.value = false;
+      Get.snackbar('خطأ', 'تعذر إرسال الرسالة: $e', backgroundColor: Colors.red, colorText: Colors.white);
     }
   }
 
   Future<void> updateProfile(String name, String phone) async {
-    if (customerId > 1000000000000) {
-      Get.snackbar(
-        'تنبيه',
-        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
-      return;
-    }
-    final payload = {'id': customerId, 'name': name, 'primary_phone': phone};
+    final cleanName = name.trim();
+    final cleanPhone = phone.trim();
 
-    // Update local immediately
-    final cust = Map<String, dynamic>.from(customer.value);
-    cust['name'] = name;
-    cust['primary_phone'] = phone;
+    final cust = Map<String, dynamic>.from(customer);
+    cust['name'] = cleanName;
+    cust['primary_phone'] = cleanPhone;
     await _dbService.saveCustomer(cust);
-    fetchProfile();
+    await fetchProfile();
 
-    _syncService.executeOrQueue(
-      'update_customer',
-      payload,
-    ).then((success) {
-      if (success) {
-        Get.snackbar(
-          'نجاح',
-          'تم تحديث بيانات العميل بنجاح',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
-      }
-    });
-  }
-
-  Future<void> updateSchedule(DateTime? date, int? days) async {
-    if (customerId > 1000000000000) {
-      Get.snackbar(
-        'تنبيه',
-        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
-      return;
+    if (Get.isRegistered<CustomersController>()) {
+      Get.find<CustomersController>().fetchCustomers();
     }
-    final nextDate = date?.toIso8601String().split('T')[0];
-    
-    // Update local immediately
-    final cust = Map<String, dynamic>.from(customer.value);
-    cust['next_reminder_date'] = nextDate;
-    cust['reminder_frequency_days'] = days;
-    await _dbService.saveCustomer(cust);
-    fetchProfile();
 
-    final payload = {
-      'id': customerId,
-      'next_reminder_date': nextDate,
-      'reminder_frequency_days': days,
-    };
-
-    _syncService.executeOrQueue(
-      'update_customer',
-      payload,
-    ).then((success) {
-      if (success) {
-        Get.snackbar(
-          'نجاح',
-          'تم حفظ إعدادات تذكير العميل بنجاح',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
-      }
-    });
-  }
-
-  Future<void> toggleDebtNotification(bool value) async {
-    if (customerId > 1000000000000) {
-      Get.snackbar(
-        'تنبيه',
-        'يجب الانتظار حتى تتم مزامنة بيانات العميل مع السيرفر',
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
-      return;
-    }
-    if (!_syncService.isOnline.value) {
-      Get.snackbar(
-        'تنبيه',
-        'يجب الاتصال بالإنترنت لتعديل إعدادات الواتساب',
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-      );
-      return;
-    }
-    try {
-      final response = await _apiClient.put(
-        '/customers/$customerId',
-        data: {'notify_on_debt': value},
-      );
-      if (response.statusCode == 200) {
-        final cust = Map<String, dynamic>.from(customer.value);
-        cust['notify_on_debt'] = value ? 1 : 0;
-        await _dbService.saveCustomer(cust);
-        customer.value = cust;
-      }
-    } on DioException catch (e) {
-      Get.snackbar(
-        'خطأ',
-        'فشل الحفظ: ${e.response?.data['message'] ?? e.response?.data}',
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-      print(
-        "$e الرساله المدققه ${e.response?.data['message'] ?? e.response?.data}",
-      );
-    } catch (e) {
-      Get.snackbar(
-        'خطأ',
-        'فشل حفظ إعدادات الإشعارات',
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-    }
+    Get.snackbar(
+      'نجاح',
+      'تم تحديث بيانات العميل بنجاح',
+      backgroundColor: Colors.green,
+      colorText: Colors.white,
+    );
   }
 
   Future<void> exportStatement(
@@ -444,7 +287,6 @@ class CustomerProfileController extends GetxController {
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
-      print("فشل تصدير كشف الحساب: $e");
     }
   }
 }

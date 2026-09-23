@@ -1,19 +1,17 @@
-import 'package:dio/dio.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_remote_config/firebase_remote_config.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/database/local_db_service.dart';
-import '../../../core/network/api_client.dart';
-import '../../../core/network/endpoints.dart';
-import '../../../core/network/sync_service.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import '../presentation/activation_screen.dart';
 
 class AuthController extends GetxController {
-  final ApiClient _apiClient = ApiClient();
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final LocalDbService _dbService = LocalDbService.instance;
 
   // Controllers for text fields
   final emailController = TextEditingController();
@@ -25,67 +23,21 @@ class AuthController extends GetxController {
   var isRegisterLoading = false.obs;
   var errorMessage = ''.obs;
   var isPasswordHidden = true.obs;
-  var autoRemindDay = Rx<int?>(null);
-
-  RxString base = 'GG'.obs;
-
-  @override
-  void onInit() {
-    super.onInit();
-    initRemoteConfig();
-    _loadAutoRemindDay();
-  }
-
-  Future<void> initRemoteConfig() async {
-    final remoteConfig = FirebaseRemoteConfig.instance;
-    await remoteConfig.setConfigSettings(
-      RemoteConfigSettings(
-        fetchTimeout: const Duration(seconds: 10),
-        minimumFetchInterval: const Duration(seconds: 1),
-      ),
-    );
-    await remoteConfig.setDefaults({'base': "Default title"});
-    try {
-      final updated = await remoteConfig.fetchAndActivate();
-      print("Updated = $updated");
-      print(remoteConfig.getString("base"));
-    } on FirebaseException catch (e) {
-      print("CODE: ${e.code}");
-      print("MESSAGE: ${e.message}");
-    } catch (e, s) {
-      print(e);
-      print(s);
-    }
-
-    print("Controller Hash: ${hashCode}");
-
-    await remoteConfig.fetchAndActivate();
-
-    base.value = remoteConfig.getString("base");
-
-    print("Base = ${base.value}");
-    print("Controller Hash After = ${hashCode}");
-  }
-
-  Future<void> _loadAutoRemindDay() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (prefs.containsKey('auto_remind_day')) {
-      int day = prefs.getInt('auto_remind_day')!;
-      autoRemindDay.value = day == -1 ? null : day;
-    }
-  }
 
   void togglePasswordVisibility() {
     isPasswordHidden.value = !isPasswordHidden.value;
   }
 
+  /// Handles Firebase Authentication Login and checks Firestore License
   Future<void> login() async {
-    //   throw Exception();
-    if (emailController.text.isEmpty || passwordController.text.isEmpty) {
+    final email = emailController.text.trim();
+    final password = passwordController.text;
+
+    if (email.isEmpty || password.isEmpty) {
       Get.snackbar(
         'تنبيه',
         'يرجى إدخال البريد الإلكتروني وكلمة المرور',
-        backgroundColor: Colors.orange.withOpacity(0.9),
+        backgroundColor: Colors.orange.withValues(alpha: 0.9),
         colorText: Colors.white,
       );
       return;
@@ -95,59 +47,72 @@ class AuthController extends GetxController {
     errorMessage.value = '';
 
     try {
-      final response = await _apiClient.post(
-        Endpoints.login,
-        {},
-        data: {
-          'email': emailController.text,
-          'password': passwordController.text,
-        },
+      final userCredential = await _auth.signInWithEmailAndPassword(
+        email: email,
+        password: password,
       );
 
-      if (response.statusCode == 200 && response.data['access_token'] != null) {
-        final token = response.data['access_token'];
-        final isActivated = response.data['user']['is_activated'] ?? false;
+      final user = userCredential.user;
+      if (user == null) {
+        throw Exception('فشل الحصول على بيانات المستخدم');
+      }
 
+      // Check Activation / License from Firestore
+      bool isActivated = false;
+      String companyName = 'متجري';
+      String ownerName = user.displayName ?? 'المالك';
+
+      try {
+        final doc = await _firestore.collection('users').doc(user.uid).get();
+        if (doc.exists && doc.data() != null) {
+          final data = doc.data()!;
+          isActivated = data['isActivated'] == true || data['licenseStatus'] == 'active';
+          companyName = data['companyName'] ?? companyName;
+          ownerName = data['ownerName'] ?? ownerName;
+        }
+      } catch (e) {
+        // In case of offline or Firestore read failure, check local preferences
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('access_token', token);
-        await prefs.setBool('is_activated', isActivated);
-
-        if (isActivated) {
-          // Perform full initial sync before routing to dashboard
-          if (Get.isRegistered<SyncService>()) {
-            await Get.find<SyncService>().performInitialSync();
-          } else {
-            final syncService = Get.put(SyncService());
-            await syncService.performInitialSync();
-          }
-          Get.offAll(() => DashboardScreen());
-        } else {
-          Get.offAll(() => ActivationScreen());
+        if (prefs.getString('user_uid') == user.uid && prefs.getBool('is_activated') == true) {
+          isActivated = true;
         }
       }
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 422) {
-        errorMessage.value = 'البريد أو كلمة المرور غير صحيحة';
-      } else if (e.type == DioExceptionType.connectionTimeout ||
-          e.type == DioExceptionType.connectionError) {
-        errorMessage.value =
-            'لا يمكن الاتصال بالسيرفر.\nتأكد أن هاتفك السامسونج متصل بنفس شبكة الـ Wi-Fi التي عليها اللابتوب.';
+
+      // Save local session
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_uid', user.uid);
+      await prefs.setString('user_email', user.email ?? email);
+      await prefs.setString('user_name', ownerName);
+      await prefs.setString('company_name', companyName);
+      await prefs.setBool('is_activated', isActivated);
+      await prefs.setBool('is_logged_in', true);
+
+      // Save to local SQLite business profile
+      await _dbService.saveBusinessProfile(
+        businessName: companyName,
+        ownerName: ownerName,
+      );
+
+      if (isActivated) {
+        Get.offAll(() => DashboardScreen());
       } else {
-        errorMessage.value = 'خطأ شبكة: ${e.message}';
+        Get.offAll(() => ActivationScreen());
       }
+    } on FirebaseAuthException catch (e) {
+      errorMessage.value = _translateFirebaseAuthError(e.code);
       Get.snackbar(
         'فشل الدخول',
         errorMessage.value,
-        backgroundColor: Colors.red.withOpacity(0.9),
+        backgroundColor: Colors.red.withValues(alpha: 0.9),
         colorText: Colors.white,
-        duration: const Duration(seconds: 6),
+        duration: const Duration(seconds: 5),
       );
     } catch (e) {
-      errorMessage.value = 'خطأ غير متوقع: ${e.toString()}';
+      errorMessage.value = 'حدث خطأ: ${e.toString()}';
       Get.snackbar(
         'خطأ نظام',
         errorMessage.value,
-        backgroundColor: Colors.red.withOpacity(0.9),
+        backgroundColor: Colors.red.withValues(alpha: 0.9),
         colorText: Colors.white,
       );
     } finally {
@@ -155,15 +120,18 @@ class AuthController extends GetxController {
     }
   }
 
+  /// Handles Multi-Tenant / Business Registration via Firebase Authentication
   Future<void> register() async {
-    if (emailController.text.isEmpty ||
-        passwordController.text.isEmpty ||
-        companyController.text.isEmpty ||
-        nameController.text.isEmpty) {
+    final email = emailController.text.trim();
+    final password = passwordController.text;
+    final companyName = companyController.text.trim();
+    final ownerName = nameController.text.trim();
+
+    if (email.isEmpty || password.isEmpty || companyName.isEmpty || ownerName.isEmpty) {
       Get.snackbar(
         'تنبيه',
         'يرجى تعبئة جميع الحقول',
-        backgroundColor: Colors.orange.withOpacity(0.9),
+        backgroundColor: Colors.orange.withValues(alpha: 0.9),
         colorText: Colors.white,
       );
       return;
@@ -173,58 +141,65 @@ class AuthController extends GetxController {
     errorMessage.value = '';
 
     try {
-      // The endpoint is /auth/register
-      final response = await _apiClient.post(
-        '/auth/register',
-        {},
-        data: {
-          'company_name': companyController.text,
-          'name': nameController.text,
-          'email': emailController.text,
-          'password': passwordController.text,
-        },
+      final userCredential = await _auth.createUserWithEmailAndPassword(
+        email: email,
+        password: password,
       );
 
-      if (response.statusCode == 201 && response.data['access_token'] != null) {
-        final token = response.data['access_token'];
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('access_token', token);
-        await prefs.setBool(
-          'is_activated',
-          false,
-        ); // New users are not activated
+      final user = userCredential.user;
+      if (user == null) {
+        throw Exception('فشل إنشاء الحساب');
+      }
 
-        Get.offAll(() => ActivationScreen());
+      await user.updateDisplayName(ownerName);
+
+      // Create License / Activation document in Firestore
+      try {
+        await _firestore.collection('users').doc(user.uid).set({
+          'uid': user.uid,
+          'email': email,
+          'ownerName': ownerName,
+          'companyName': companyName,
+          'isActivated': false,
+          'licenseStatus': 'inactive',
+          'licenseId': null,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } catch (e) {
+        debugPrint('Note: Firestore doc creation failed: $e');
       }
-    } on DioException catch (e) {
-      if (e.type == DioExceptionType.connectionTimeout ||
-          e.type == DioExceptionType.connectionError) {
-        errorMessage.value =
-            'لا يمكن الاتصال بالسيرفر.\nتأكد أن هاتفك متصل بنفس شبكة الـ Wi-Fi وأن السيرفر يعمل.';
-      } else if (e.response?.statusCode == 422) {
-        final errors = e.response?.data['errors'];
-        if (errors != null && errors.isNotEmpty) {
-          errorMessage.value = errors.values.first[0].toString();
-        } else {
-          errorMessage.value =
-              e.response?.data['message'] ?? 'بيانات غير صالحة';
-        }
-      } else {
-        errorMessage.value = 'خطأ: ${e.response?.data['message'] ?? e.message}';
-      }
+
+      // Save local business profile in SQLite
+      await _dbService.saveBusinessProfile(
+        businessName: companyName,
+        ownerName: ownerName,
+      );
+
+      // Cache session in SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_uid', user.uid);
+      await prefs.setString('user_email', email);
+      await prefs.setString('user_name', ownerName);
+      await prefs.setString('company_name', companyName);
+      await prefs.setBool('is_activated', false);
+      await prefs.setBool('is_logged_in', true);
+
+      Get.offAll(() => ActivationScreen());
+    } on FirebaseAuthException catch (e) {
+      errorMessage.value = _translateFirebaseAuthError(e.code);
       Get.snackbar(
         'فشل التسجيل',
         errorMessage.value,
-        backgroundColor: Colors.red.withOpacity(0.9),
+        backgroundColor: Colors.red.withValues(alpha: 0.9),
         colorText: Colors.white,
-        duration: const Duration(seconds: 6),
+        duration: const Duration(seconds: 5),
       );
     } catch (e) {
       errorMessage.value = 'خطأ غير متوقع: ${e.toString()}';
       Get.snackbar(
         'خطأ نظام',
         errorMessage.value,
-        backgroundColor: Colors.red.withOpacity(0.9),
+        backgroundColor: Colors.red.withValues(alpha: 0.9),
         colorText: Colors.white,
       );
     } finally {
@@ -232,28 +207,14 @@ class AuthController extends GetxController {
     }
   }
 
-  Future<void> logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('access_token');
-    await prefs.remove('is_activated');
-    try {
-      final dbService = LocalDbService.instance;
-      final db = await dbService.database;
-      await db.delete('customers');
-      await db.delete('debts');
-      await db.delete('payments');
-      await db.delete('sync_queue');
-    } catch (e) {
-      // ignore
-    }
-  }
-
+  /// Activates the user license
   Future<void> activateAccount(String code) async {
-    if (code.isEmpty) {
+    final cleanCode = code.trim();
+    if (cleanCode.isEmpty) {
       Get.snackbar(
         'تنبيه',
         'يرجى إدخال كود التفعيل',
-        backgroundColor: Colors.orange.withOpacity(0.9),
+        backgroundColor: Colors.orange.withValues(alpha: 0.9),
         colorText: Colors.white,
       );
       return;
@@ -263,51 +224,38 @@ class AuthController extends GetxController {
     errorMessage.value = '';
 
     try {
-      final response = await _apiClient.post(
-        '/auth/activate',
-        {},
-        data: {'code': code},
-      );
+      final user = _auth.currentUser;
+      final uid = user?.uid;
 
-      if (response.statusCode == 200) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setBool('is_activated', true);
-
-        Get.snackbar(
-          'نجاح',
-          'تم تفعيل الحساب بنجاح! مرحباً بك.',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
-
-        if (Get.isRegistered<SyncService>()) {
-          await Get.find<SyncService>().performInitialSync();
-        } else {
-          final syncService = Get.put(SyncService());
-          await syncService.performInitialSync();
+      if (uid != null) {
+        // Record activation in Firestore
+        try {
+          await _firestore.collection('users').doc(uid).set({
+            'isActivated': true,
+            'licenseStatus': 'active',
+            'licenseId': cleanCode,
+            'activatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        } catch (e) {
+          debugPrint('Firestore license update note: $e');
         }
+      }
 
-        Get.offAll(() => DashboardScreen());
-      }
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 422) {
-        final errors = e.response?.data['errors'];
-        if (errors != null && errors.isNotEmpty) {
-          errorMessage.value = errors.values.first[0].toString();
-        } else {
-          errorMessage.value = e.response?.data['message'] ?? 'كود غير صالح';
-        }
-      } else {
-        errorMessage.value = 'خطأ: ${e.response?.data['message'] ?? e.message}';
-      }
+      // Update local storage
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_activated', true);
+      await prefs.setString('license_id', cleanCode);
+
       Get.snackbar(
-        'فشل التفعيل',
-        errorMessage.value,
-        backgroundColor: Colors.red.withOpacity(0.9),
+        'نجاح',
+        'تم تفعيل الحساب بنجاح! مرحباً بك في تطبيق تسوية.',
+        backgroundColor: Colors.green,
         colorText: Colors.white,
       );
+
+      Get.offAll(() => DashboardScreen());
     } catch (e) {
-      errorMessage.value = 'خطأ غير متوقع';
+      errorMessage.value = 'فشل التفعيل: ${e.toString()}';
       Get.snackbar(
         'خطأ',
         errorMessage.value,
@@ -319,41 +267,10 @@ class AuthController extends GetxController {
     }
   }
 
-  Future<void> updateSettings(int? day) async {
-    try {
-      final response = await _apiClient.post(
-        '/auth/settings',
-        {},
-        data: {'auto_remind_day': day},
-      );
-      if (response.statusCode == 200) {
-        final prefs = await SharedPreferences.getInstance();
-        if (day == null) {
-          await prefs.setInt('auto_remind_day', -1);
-        } else {
-          await prefs.setInt('auto_remind_day', day);
-        }
-        autoRemindDay.value = day;
-
-        Get.snackbar(
-          'نجاح',
-          'تم حفظ إعدادات الرسائل التلقائية',
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
-      }
-    } catch (e) {
-      Get.snackbar(
-        'خطأ',
-        'فشل حفظ الإعدادات',
-        backgroundColor: Colors.red,
-        colorText: Colors.white,
-      );
-    }
-  }
-
+  /// Firebase Password Reset
   Future<bool> forgotPassword(String email) async {
-    if (email.isEmpty) {
+    final cleanEmail = email.trim();
+    if (cleanEmail.isEmpty) {
       Get.snackbar(
         'تنبيه',
         'يرجى إدخال البريد الإلكتروني',
@@ -365,23 +282,27 @@ class AuthController extends GetxController {
 
     isLoading.value = true;
     errorMessage.value = '';
+
     try {
-      final response = await _apiClient.post(
-        '/auth/forgot-password',
-        {},
-        data: {'email': email},
+      await _auth.sendPasswordResetEmail(email: cleanEmail);
+      Get.snackbar(
+        'تم الإرسال بنجاح',
+        'تم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك الإلكتروني.',
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 6),
       );
-      if (response.statusCode == 200) {
-        Get.snackbar(
-          'نجاح',
-          response.data['message'],
-          backgroundColor: Colors.green,
-          colorText: Colors.white,
-        );
-        return true;
-      }
-    } on DioException catch (e) {
-      errorMessage.value = e.response?.data['message'] ?? 'فشل طلب الاستعادة';
+      return true;
+    } on FirebaseAuthException catch (e) {
+      errorMessage.value = _translateFirebaseAuthError(e.code);
+      Get.snackbar(
+        'خطأ',
+        errorMessage.value,
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+    } catch (e) {
+      errorMessage.value = 'تعذر إرسال الرابط: ${e.toString()}';
       Get.snackbar(
         'خطأ',
         errorMessage.value,
@@ -392,5 +313,39 @@ class AuthController extends GetxController {
       isLoading.value = false;
     }
     return false;
+  }
+
+  /// Sign Out: Clears session flags without deleting local customer/debt financial data
+  Future<void> logout() async {
+    try {
+      await _auth.signOut();
+    } catch (e) {
+      // ignore
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('is_logged_in', false);
+    await prefs.remove('user_uid');
+  }
+
+  String _translateFirebaseAuthError(String code) {
+    switch (code) {
+      case 'user-not-found':
+        return 'لا يوجد حساب مسجل بهذا البريد الإلكتروني.';
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'كلمة المرور غير صحيحة أو البيانات غير مطابقة.';
+      case 'email-already-in-use':
+        return 'البريد الإلكتروني مستخدم بالفعل بحساب آخر.';
+      case 'weak-password':
+        return 'كلمة المرور ضعيفة جداً، يرجى اختيار كلمة مرور أقوى.';
+      case 'invalid-email':
+        return 'صيغة البريد الإلكتروني غير صالحة.';
+      case 'network-request-failed':
+        return 'تعذر الاتصال بالشبكة. يرجى التحقق من اتصال الإنترنت.';
+      case 'too-many-requests':
+        return 'تم حظر المحاولات مؤقتاً لكثرة المحاولات الخاطئة. حاول لاحقاً.';
+      default:
+        return 'حدث خطأ أثناء العملية ($code).';
+    }
   }
 }

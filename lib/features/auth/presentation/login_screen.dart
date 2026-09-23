@@ -15,7 +15,6 @@ class LoginScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    print("Login Controller Hash: ${_authController.hashCode}");
     return Scaffold(
       backgroundColor: AppTheme.backgroundLight,
       body: SafeArea(
@@ -118,11 +117,7 @@ class LoginScreen extends StatelessWidget {
                               strokeWidth: 2,
                             ),
                           )
-                        : Obx(() {
-                            print("UI Value = ${_authController.base.value}");
-                            return Text(_authController.base.value);
-                          }),
-                    //: const Text('تسجيل الدخول'),
+                        : const Text('تسجيل الدخول'),
                   ),
                 ).animate().fade(delay: 800.ms).scale(),
 

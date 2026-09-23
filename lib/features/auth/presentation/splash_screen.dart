@@ -25,10 +25,10 @@ class _SplashScreenState extends State<SplashScreen> {
   Future<void> _checkLoginStatus() async {
     await Future.delayed(const Duration(seconds: 2));
     final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('access_token');
+    final isLoggedIn = prefs.getBool('is_logged_in') ?? false;
     final isActivated = prefs.getBool('is_activated') ?? false;
 
-    if (token != null && token.isNotEmpty) {
+    if (isLoggedIn) {
       if (isActivated) {
         Get.offAll(() => DashboardScreen());
       } else {

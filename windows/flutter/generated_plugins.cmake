@@ -3,7 +3,8 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
-  connectivity_plus
+  cloud_firestore
+  firebase_auth
   firebase_core
   firebase_remote_config
   permission_handler_windows

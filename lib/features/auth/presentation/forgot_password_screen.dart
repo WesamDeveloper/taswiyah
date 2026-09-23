@@ -4,7 +4,6 @@ import 'package:get/get.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../controllers/auth_controller.dart';
-import 'otp_verification_screen.dart';
 
 class ForgotPasswordScreen extends StatelessWidget {
   ForgotPasswordScreen({Key? key}) : super(key: key);
@@ -49,7 +48,7 @@ class ForgotPasswordScreen extends StatelessWidget {
                 const SizedBox(height: 16),
 
                 Text(
-                  'أدخل بريدك الإلكتروني ليتم إرسال رمز التحقق إلى رقم الواتساب المرتبط بحسابك.',
+                  'أدخل بريدك الإلكتروني المسجل في النظام ليتم إرسال رابط إعادة تعيين كلمة المرور.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
                 ).animate().fade().slideY(),
@@ -75,7 +74,7 @@ class ForgotPasswordScreen extends StatelessWidget {
                         : () async {
                             bool success = await _authController.forgotPassword(_authController.emailController.text);
                             if (success) {
-                              Get.to(() => OtpVerificationScreen(email: _authController.emailController.text));
+                              Get.back();
                             }
                           },
                     child: _authController.isLoading.value
@@ -87,7 +86,7 @@ class ForgotPasswordScreen extends StatelessWidget {
                               strokeWidth: 2,
                             ),
                           )
-                        : const Text('إرسال رمز التحقق'),
+                        : const Text('إرسال رابط استعادة كلمة المرور'),
                   ),
                 ).animate().fade().scale(),
               ],

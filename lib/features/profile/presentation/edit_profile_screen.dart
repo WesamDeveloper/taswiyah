@@ -1,14 +1,14 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/database/local_db_service.dart';
 import '../../../core/theme/app_theme.dart';
-import '../../../core/network/api_client.dart';
-import '../../auth/presentation/forgot_password_screen.dart';
 import '../../dashboard/controllers/dashboard_controller.dart';
 
 class EditProfileScreen extends StatefulWidget {
-  const EditProfileScreen({Key? key}) : super(key: key);
+  const EditProfileScreen({super.key});
 
   @override
   State<EditProfileScreen> createState() => _EditProfileScreenState();
@@ -16,14 +16,13 @@ class EditProfileScreen extends StatefulWidget {
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
   final _nameController = TextEditingController();
-  final _currentPasswordController = TextEditingController();
+  final _businessNameController = TextEditingController();
   final _newPasswordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  final LocalDbService _dbService = LocalDbService.instance;
   
-  final ApiClient _apiClient = ApiClient();
   bool _isLoading = false;
   bool _isInitLoading = true;
-  bool _isCurrentPasswordHidden = true;
   bool _isNewPasswordHidden = true;
   bool _isConfirmPasswordHidden = true;
   String _selectedAvatar = 'person';
@@ -45,73 +44,88 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   Future<void> _fetchProfile() async {
     try {
-      final response = await _apiClient.get('/auth/me');
-      if (response.statusCode == 200) {
-        final data = response.data['data'];
-        _nameController.text = data['name'] ?? '';
-        setState(() {
-          _selectedAvatar = data['avatar_icon'] ?? 'person';
-          _isInitLoading = false;
-        });
-      }
-    } catch (e) {
-      Get.snackbar('خطأ', 'فشل جلب بيانات الملف الشخصي');
+      final profile = await _dbService.getBusinessProfile();
+      final prefs = await SharedPreferences.getInstance();
+      final firebaseUser = FirebaseAuth.instance.currentUser;
+
+      final currentName = profile?['owner_name'] ?? 
+                          prefs.getString('user_name') ?? 
+                          firebaseUser?.displayName ?? '';
+      final currentBizName = profile?['business_name'] ?? 
+                             prefs.getString('company_name') ?? 'متجري';
+      final currentAvatar = profile?['avatar_icon'] ?? 'person';
+
+      _nameController.text = currentName;
+      _businessNameController.text = currentBizName;
       setState(() {
+        _selectedAvatar = currentAvatar;
         _isInitLoading = false;
       });
+    } catch (e) {
+      setState(() => _isInitLoading = false);
     }
   }
 
   Future<void> _updateProfile() async {
+    final newName = _nameController.text.trim();
+    if (newName.isEmpty) {
+      Get.snackbar('تنبيه', 'يرجى إدخال الاسم', backgroundColor: Colors.orange, colorText: Colors.white);
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
-      Map<String, dynamic> data = {
-        'name': _nameController.text,
-        'avatar_icon': _selectedAvatar,
-      };
-
+      // 1. Update Password if specified
       if (_newPasswordController.text.isNotEmpty) {
         if (_newPasswordController.text != _confirmPasswordController.text) {
           Get.snackbar('خطأ', 'كلمة المرور الجديدة وتأكيدها لا يتطابقان', backgroundColor: Colors.red, colorText: Colors.white);
           setState(() => _isLoading = false);
           return;
         }
-        if (_currentPasswordController.text.isEmpty) {
-          Get.snackbar('خطأ', 'يرجى إدخال كلمة المرور الحالية', backgroundColor: Colors.red, colorText: Colors.white);
+        if (_newPasswordController.text.length < 6) {
+          Get.snackbar('خطأ', 'كلمة المرور يجب أن لا تقل عن 6 أحرف', backgroundColor: Colors.red, colorText: Colors.white);
           setState(() => _isLoading = false);
           return;
         }
-        data['password'] = _newPasswordController.text;
-        data['current_password'] = _currentPasswordController.text;
+
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          await user.updatePassword(_newPasswordController.text);
+        }
       }
 
-      final response = await _apiClient.post('/auth/profile', {}, data: data);
-      
-      if (response.statusCode == 200) {
-        Get.snackbar('نجاح', 'تم تحديث الملف الشخصي بنجاح', backgroundColor: Colors.green, colorText: Colors.white);
-        
-        // Clear passwords after success
-        _currentPasswordController.clear();
-        _newPasswordController.clear();
-        _confirmPasswordController.clear();
-        
-        // Wait a bit to ensure snackbar shows, then maybe refresh dashboard
-        Future.delayed(const Duration(seconds: 1), () {
-           if (Get.isRegistered<DashboardController>()) {
-             Get.find<DashboardController>().fetchStats();
-           }
-        });
+      // 2. Update Firebase display name
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await user.updateDisplayName(newName);
       }
-    } on DioException catch (e) {
-      final msg = e.response?.data['message'] ?? 'فشل التحديث';
-      Get.snackbar('خطأ', msg, backgroundColor: Colors.red, colorText: Colors.white);
+
+      // 3. Update local SQLite Business Profile
+      final newBizName = _businessNameController.text.trim().isEmpty ? 'متجري' : _businessNameController.text.trim();
+      await _dbService.saveBusinessProfile(
+        businessName: newBizName,
+        ownerName: newName,
+        avatarIcon: _selectedAvatar,
+      );
+
+      // 4. Update SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_name', newName);
+      await prefs.setString('company_name', newBizName);
+
+      Get.snackbar('نجاح', 'تم حفظ وتحديث الملف الشخصي محلياً بنجاح', backgroundColor: Colors.green, colorText: Colors.white);
+
+      _newPasswordController.clear();
+      _confirmPasswordController.clear();
+
+      if (Get.isRegistered<DashboardController>()) {
+        Get.find<DashboardController>().fetchStats();
+      }
+    } catch (e) {
+      Get.snackbar('خطأ', 'فشل حفظ التعديلات: $e', backgroundColor: Colors.red, colorText: Colors.white);
     } finally {
       setState(() => _isLoading = false);
     }
-  }
-
-  IconData _getIconData(String id) {
-    return _avatars.firstWhere((element) => element['id'] == id, orElse: () => _avatars[0])['icon'];
   }
 
   @override
@@ -139,57 +153,57 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                     alignment: WrapAlignment.center,
                     children: _avatars.map((avatar) {
                       final isSelected = _selectedAvatar == avatar['id'];
-                      return GestureDetector(
+                      return InkWell(
                         onTap: () {
                           setState(() {
                             _selectedAvatar = avatar['id'];
                           });
                         },
-                        child: CircleAvatar(
-                          radius: 30,
-                          backgroundColor: isSelected ? AppTheme.primaryColor : Colors.grey.shade300,
-                          child: Icon(avatar['icon'], size: 30, color: isSelected ? Colors.white : Colors.grey.shade700),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: isSelected ? AppTheme.primaryColor : Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isSelected ? AppTheme.primaryColor : Colors.grey.shade300,
+                              width: 2,
+                            ),
+                          ),
+                          child: Icon(
+                            avatar['icon'] as IconData,
+                            size: 32,
+                            color: isSelected ? Colors.white : Colors.grey.shade700,
+                          ),
                         ),
                       );
                     }).toList(),
                   ),
                   const SizedBox(height: 32),
-                  
+
+                  TextField(
+                    controller: _businessNameController,
+                    decoration: const InputDecoration(
+                      labelText: 'اسم المتجر / النشاط التجاري',
+                      prefixIcon: Icon(Icons.storefront_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
                   TextField(
                     controller: _nameController,
-                    decoration: const InputDecoration(labelText: 'الاسم / اسم المتجر', prefixIcon: Icon(Icons.person)),
+                    decoration: const InputDecoration(
+                      labelText: 'الاسم الكامل / المالك',
+                      prefixIcon: Icon(Icons.person),
+                    ),
                   ),
-                  
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 24),
+
                   const Divider(),
                   const SizedBox(height: 16),
-                  const Text('تغيير كلمة المرور', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const Text('تغيير كلمة المرور (اختياري)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                   const SizedBox(height: 16),
-                  
-                  TextField(
-                    controller: _currentPasswordController,
-                    decoration: InputDecoration(
-                      labelText: 'كلمة المرور الحالية',
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      suffixIcon: IconButton(
-                        icon: Icon(_isCurrentPasswordHidden ? Icons.visibility_off : Icons.visibility),
-                        onPressed: () => setState(() => _isCurrentPasswordHidden = !_isCurrentPasswordHidden),
-                      ),
-                    ),
-                    obscureText: _isCurrentPasswordHidden,
-                    textDirection: TextDirection.ltr,
-                  ),
-                  
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton(
-                      onPressed: () {
-                        Get.to(() => ForgotPasswordScreen());
-                      },
-                      child: const Text('نسيت كلمة المرور؟', style: TextStyle(color: AppTheme.primaryColor)),
-                    ),
-                  ),
-                  
+
                   TextField(
                     controller: _newPasswordController,
                     decoration: InputDecoration(
@@ -201,35 +215,28 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       ),
                     ),
                     obscureText: _isNewPasswordHidden,
-                    textDirection: TextDirection.ltr,
                   ),
                   const SizedBox(height: 16),
-                  
+
                   TextField(
                     controller: _confirmPasswordController,
                     decoration: InputDecoration(
                       labelText: 'تأكيد كلمة المرور الجديدة',
-                      prefixIcon: const Icon(Icons.lock),
+                      prefixIcon: const Icon(Icons.lock_clock),
                       suffixIcon: IconButton(
                         icon: Icon(_isConfirmPasswordHidden ? Icons.visibility_off : Icons.visibility),
                         onPressed: () => setState(() => _isConfirmPasswordHidden = !_isConfirmPasswordHidden),
                       ),
                     ),
                     obscureText: _isConfirmPasswordHidden,
-                    textDirection: TextDirection.ltr,
                   ),
+                  const SizedBox(height: 32),
 
-                  const SizedBox(height: 48),
-                  
                   ElevatedButton(
                     onPressed: _isLoading ? null : _updateProfile,
-                    child: _isLoading 
-                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                        : const Text('حفظ التعديلات', style: TextStyle(color: Colors.white, fontSize: 16)),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: AppTheme.primaryColor,
-                    ),
+                    child: _isLoading
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Text('حفظ التعديلات'),
                   ),
                 ],
               ),

@@ -7,7 +7,6 @@ import '../../../core/theme/app_theme.dart';
 import '../../customers/presentation/customers_screen.dart';
 import '../../debts/presentation/debts_screen.dart';
 import '../../profile/presentation/profile_screen.dart';
-import '../../whatsapp/presentation/whatsapp_setup_screen.dart';
 import '../controllers/dashboard_controller.dart';
 
 class DashboardScreen extends StatelessWidget {
@@ -223,11 +222,9 @@ class DashboardScreen extends StatelessWidget {
             await Get.to(() => CustomersScreen());
             controller.fetchStats();
           } else if (index == 2) {
-            await Get.to(() => WhatsappSetupScreen());
-          } else if (index == 3) {
             await Get.to(() => DebtsScreen());
             controller.fetchStats();
-          } else if (index == 4) {
+          } else if (index == 3) {
             await Get.to(() => const ProfileScreen());
           }
         },
@@ -238,19 +235,13 @@ class DashboardScreen extends StatelessWidget {
           ),
           BottomNavigationBarItem(icon: Icon(Icons.people), label: 'العملاء'),
           BottomNavigationBarItem(
-            icon: CircleAvatar(
-              backgroundColor: AppTheme.primaryColor,
-              child: Icon(Icons.qr_code_scanner, color: Colors.white),
-            ),
-            label: '',
-          ),
-          BottomNavigationBarItem(
             icon: Icon(Icons.receipt_long),
             label: 'الديون',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.more_horiz),
-            label: 'المزيد',
+            icon: Icon(Icons.settings_outlined),
+            activeIcon: Icon(Icons.settings),
+            label: 'الإعدادات',
           ),
         ],
       ),

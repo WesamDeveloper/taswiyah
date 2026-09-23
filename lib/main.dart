@@ -5,30 +5,35 @@ import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:get/get.dart';
 
-import 'core/network/sync_service.dart';
+import 'core/database/local_db_service.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/presentation/splash_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  Get.put(SyncService(), permanent: true);
-  await Firebase.initializeApp();
-  print(Firebase.app().options.projectId);
-  print(Firebase.app().options.appId);
-  print(Firebase.app().options.apiKey);
-  FlutterError.onError = (errorDetails) {
-    FirebaseCrashlytics.instance.recordFlutterFatalError(errorDetails);
-  };
-  // Pass all uncaught asynchronous errors that aren't handled by the Flutter framework to Crashlytics
-  PlatformDispatcher.instance.onError = (error, stack) {
-    FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-    return true;
-  };
+
+  // Initialize Local SQLite Database
+  await LocalDbService.instance.database;
+
+  // Initialize Firebase (Auth / License / Crashlytics)
+  try {
+    await Firebase.initializeApp();
+    FlutterError.onError = (errorDetails) {
+      FirebaseCrashlytics.instance.recordFlutterFatalError(errorDetails);
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
+      FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
+      return true;
+    };
+  } catch (e) {
+    debugPrint('Firebase initialization note: $e');
+  }
+
   runApp(const TaswiyahApp());
 }
 
 class TaswiyahApp extends StatelessWidget {
-  const TaswiyahApp({Key? key}) : super(key: key);
+  const TaswiyahApp({super.key});
 
   @override
   Widget build(BuildContext context) {

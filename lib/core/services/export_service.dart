@@ -5,7 +5,6 @@ import 'package:excel/excel.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../database/local_db_service.dart';
@@ -14,7 +13,7 @@ class ExportService {
   final LocalDbService _dbService = LocalDbService.instance;
 
   Future<void> exportCustomerStatement({
-    required int customerId,
+    required dynamic customerId,
     required String customerName,
     required String format, // 'pdf' or 'excel'
     required DateTime? startDate,

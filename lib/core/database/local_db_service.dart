@@ -1,10 +1,11 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
-import 'dart:convert';
+import 'package:uuid/uuid.dart';
 
 class LocalDbService {
   static final LocalDbService instance = LocalDbService._init();
   static Database? _database;
+  static const Uuid _uuid = Uuid();
 
   LocalDbService._init();
 
@@ -20,15 +21,91 @@ class LocalDbService {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
+      onConfigure: (db) async {
+        await db.execute('PRAGMA foreign_keys = ON;');
+      },
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
   }
 
-  Future _upgradeDB(Database db, int oldVersion, int newVersion) async {
+  Future<void> _createDB(Database db, int version) async {
+    // 1. Business Profile Table (Local Multi-Tenant / Business Identity)
+    await db.execute('''
+    CREATE TABLE business_profile (
+      id TEXT PRIMARY KEY,
+      business_name TEXT NOT NULL,
+      owner_name TEXT,
+      phone TEXT,
+      address TEXT,
+      currency TEXT DEFAULT 'ر.ي',
+      auto_remind_day INTEGER,
+      avatar_icon TEXT DEFAULT 'person',
+      created_at TEXT,
+      updated_at TEXT
+    );
+    ''');
+
+    // 2. Customers Table
+    await db.execute('''
+    CREATE TABLE customers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      primary_phone TEXT NOT NULL,
+      secondary_phone TEXT,
+      address TEXT,
+      email TEXT,
+      remaining_balance REAL DEFAULT 0,
+      notify_on_debt INTEGER DEFAULT 0,
+      reminder_frequency_days INTEGER,
+      next_reminder_date TEXT,
+      created_at TEXT
+    );
+    ''');
+
+    // 3. Debts Table
+    await db.execute('''
+    CREATE TABLE debts (
+      id TEXT PRIMARY KEY,
+      customer_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      paid REAL DEFAULT 0,
+      status TEXT DEFAULT 'unpaid',
+      due_date TEXT,
+      notes TEXT,
+      created_at TEXT,
+      FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
+    );
+    ''');
+
+    // 4. Payments Table
+    await db.execute('''
+    CREATE TABLE payments (
+      id TEXT PRIMARY KEY,
+      debt_id TEXT,
+      customer_id TEXT NOT NULL,
+      amount REAL NOT NULL,
+      created_at TEXT,
+      FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+      FOREIGN KEY (debt_id) REFERENCES debts (id) ON DELETE SET NULL
+    );
+    ''');
+
+    // 5. Performance Indexes
+    await _createIndexes(db);
+  }
+
+  Future<void> _createIndexes(DatabaseExecutor db) async {
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_name ON customers (name);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (primary_phone);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_debts_customer ON debts (customer_id);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_debts_status ON debts (status);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments (customer_id);');
+  }
+
+  Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      // Add payments table
       await db.execute('''
       CREATE TABLE IF NOT EXISTS payments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,85 +118,203 @@ class LocalDbService {
         created_at TEXT,
         is_synced INTEGER DEFAULT 1,
         FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
-      )
+      );
       ''');
+    }
+
+    if (oldVersion < 3) {
+      // Safe Migration to v3:
+      // Remove backend/sync columns (tenant_id, branch_id, remote_id, is_synced)
+      // Convert IDs to TEXT (UUID compatible) while preserving existing data
+      // Add foreign keys and indexes, and create business_profile table
+
+      // 1. Migrate Customers
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS customers_v3 (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        primary_phone TEXT NOT NULL,
+        secondary_phone TEXT,
+        address TEXT,
+        email TEXT,
+        remaining_balance REAL DEFAULT 0,
+        notify_on_debt INTEGER DEFAULT 0,
+        reminder_frequency_days INTEGER,
+        next_reminder_date TEXT,
+        created_at TEXT
+      );
+      ''');
+
+      try {
+        await db.execute('''
+        INSERT INTO customers_v3 (id, name, primary_phone, secondary_phone, address, email, remaining_balance, notify_on_debt, reminder_frequency_days, next_reminder_date, created_at)
+        SELECT CAST(id AS TEXT), name, primary_phone, secondary_phone, address, email, 
+               COALESCE(remaining_balance, 0), 
+               COALESCE(notify_on_debt, 0), 
+               reminder_frequency_days, next_reminder_date, 
+               datetime('now')
+        FROM customers;
+        ''');
+        await db.execute('DROP TABLE customers;');
+      } catch (e) {
+        // In case table was empty or structure differed
+      }
+      await db.execute('ALTER TABLE customers_v3 RENAME TO customers;');
+
+      // 2. Migrate Debts
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS debts_v3 (
+        id TEXT PRIMARY KEY,
+        customer_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        paid REAL DEFAULT 0,
+        status TEXT DEFAULT 'unpaid',
+        due_date TEXT,
+        notes TEXT,
+        created_at TEXT,
+        FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
+      );
+      ''');
+
+      try {
+        await db.execute('''
+        INSERT INTO debts_v3 (id, customer_id, amount, paid, status, due_date, notes, created_at)
+        SELECT CAST(COALESCE(remote_id, id) AS TEXT), 
+               CAST(customer_id AS TEXT), 
+               amount, 
+               COALESCE(paid, 0), 
+               COALESCE(status, 'unpaid'), 
+               due_date, notes, 
+               COALESCE(created_at, datetime('now'))
+        FROM debts;
+        ''');
+        await db.execute('DROP TABLE debts;');
+      } catch (e) {
+        // ignore
+      }
+      await db.execute('ALTER TABLE debts_v3 RENAME TO debts;');
+
+      // 3. Migrate Payments
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS payments_v3 (
+        id TEXT PRIMARY KEY,
+        debt_id TEXT,
+        customer_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        created_at TEXT,
+        FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+        FOREIGN KEY (debt_id) REFERENCES debts (id) ON DELETE SET NULL
+      );
+      ''');
+
+      try {
+        await db.execute('''
+        INSERT INTO payments_v3 (id, debt_id, customer_id, amount, created_at)
+        SELECT CAST(COALESCE(remote_id, id) AS TEXT), 
+               CASE WHEN debt_id IS NOT NULL THEN CAST(debt_id AS TEXT) ELSE NULL END, 
+               CAST(customer_id AS TEXT), 
+               amount, 
+               COALESCE(created_at, datetime('now'))
+        FROM payments;
+        ''');
+        await db.execute('DROP TABLE payments;');
+      } catch (e) {
+        // ignore
+      }
+      await db.execute('ALTER TABLE payments_v3 RENAME TO payments;');
+
+      // 4. Create Business Profile Table
+      await db.execute('''
+      CREATE TABLE IF NOT EXISTS business_profile (
+        id TEXT PRIMARY KEY,
+        business_name TEXT NOT NULL,
+        owner_name TEXT,
+        phone TEXT,
+        address TEXT,
+        currency TEXT DEFAULT 'ر.ي',
+        auto_remind_day INTEGER,
+        avatar_icon TEXT DEFAULT 'person',
+        created_at TEXT,
+        updated_at TEXT
+      );
+      ''');
+
+      // 5. Drop sync_queue safely (No longer needed in Local-First)
+      try {
+        await db.execute('DROP TABLE IF EXISTS sync_queue;');
+      } catch (e) {
+        // ignore
+      }
+
+      // 6. Create Indexes
+      await _createIndexes(db);
     }
   }
 
-  Future _createDB(Database db, int version) async {
-    // Customers Table
-    await db.execute('''
-    CREATE TABLE customers (
-      id INTEGER PRIMARY KEY,
-      tenant_id INTEGER,
-      branch_id INTEGER,
-      name TEXT NOT NULL,
-      primary_phone TEXT NOT NULL,
-      secondary_phone TEXT,
-      address TEXT,
-      email TEXT,
-      remaining_balance REAL DEFAULT 0,
-      notify_on_debt INTEGER DEFAULT 0,
-      reminder_frequency_days INTEGER,
-      next_reminder_date TEXT,
-      is_synced INTEGER DEFAULT 1
-    )
-    ''');
-
-    // Debts Table
-    await db.execute('''
-    CREATE TABLE debts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      remote_id INTEGER,
-      tenant_id INTEGER,
-      branch_id INTEGER,
-      customer_id INTEGER,
-      amount REAL NOT NULL,
-      paid REAL DEFAULT 0,
-      status TEXT DEFAULT 'unpaid',
-      due_date TEXT,
-      notes TEXT,
-      created_at TEXT,
-      is_synced INTEGER DEFAULT 1,
-      FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
-    )
-    ''');
-
-    // Payments Table
-    await db.execute('''
-    CREATE TABLE payments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      remote_id INTEGER,
-      tenant_id INTEGER,
-      branch_id INTEGER,
-      debt_id INTEGER,
-      customer_id INTEGER,
-      amount REAL NOT NULL,
-      created_at TEXT,
-      is_synced INTEGER DEFAULT 1,
-      FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE
-    )
-    ''');
-
-    // Sync Queue Table (for tracking operations made offline)
-    // operation: 'add_customer', 'add_debt', 'add_payment', 'update_customer'
-    await db.execute('''
-    CREATE TABLE sync_queue (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      operation TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    )
-    ''');
+  // ==========================================
+  // --- Business Profile Methods ---
+  // ==========================================
+  Future<Map<String, dynamic>?> getBusinessProfile() async {
+    final db = await instance.database;
+    final res = await db.query('business_profile', limit: 1);
+    if (res.isNotEmpty) return res.first;
+    return null;
   }
 
-  // --- Customers ---
-  Future<void> saveCustomer(Map<String, dynamic> customer, {bool isSynced = true}) async {
+  Future<void> saveBusinessProfile({
+    required String businessName,
+    String? ownerName,
+    String? phone,
+    String? address,
+    String currency = 'ر.ي',
+    int? autoRemindDay,
+    String avatarIcon = 'person',
+  }) async {
     final db = await instance.database;
-    await db.insert('customers', {
-      'id': customer['id'],
-      'tenant_id': customer['tenant_id'],
-      'branch_id': customer['branch_id'],
+    final now = DateTime.now().toIso8601String();
+    final existing = await getBusinessProfile();
+
+    if (existing != null) {
+      await db.update(
+        'business_profile',
+        {
+          'business_name': businessName,
+          'owner_name': ownerName ?? existing['owner_name'],
+          'phone': phone ?? existing['phone'],
+          'address': address ?? existing['address'],
+          'currency': currency,
+          'auto_remind_day': autoRemindDay ?? existing['auto_remind_day'],
+          'avatar_icon': avatarIcon,
+          'updated_at': now,
+        },
+        where: 'id = ?',
+        whereArgs: [existing['id']],
+      );
+    } else {
+      await db.insert('business_profile', {
+        'id': _uuid.v4(),
+        'business_name': businessName,
+        'owner_name': ownerName,
+        'phone': phone,
+        'address': address,
+        'currency': currency,
+        'auto_remind_day': autoRemindDay,
+        'avatar_icon': avatarIcon,
+        'created_at': now,
+        'updated_at': now,
+      });
+    }
+  }
+
+  // ==========================================
+  // --- Customers Methods ---
+  // ==========================================
+  Future<String> saveCustomer(Map<String, dynamic> customer) async {
+    final db = await instance.database;
+    final String id = customer['id']?.toString() ?? _uuid.v4();
+
+    final data = {
+      'id': id,
       'name': customer['name'],
       'primary_phone': customer['primary_phone'],
       'secondary_phone': customer['secondary_phone'],
@@ -129,8 +324,11 @@ class LocalDbService {
       'notify_on_debt': (customer['notify_on_debt'] == 1 || customer['notify_on_debt'] == true) ? 1 : 0,
       'reminder_frequency_days': customer['reminder_frequency_days'],
       'next_reminder_date': customer['next_reminder_date'],
-      'is_synced': isSynced ? 1 : 0,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+      'created_at': customer['created_at'] ?? DateTime.now().toIso8601String(),
+    };
+
+    await db.insert('customers', data, conflictAlgorithm: ConflictAlgorithm.replace);
+    return id;
   }
 
   Future<List<Map<String, dynamic>>> getAllCustomers() async {
@@ -154,81 +352,94 @@ class LocalDbService {
     ''', ['%$query%', '%$query%']);
   }
 
-  Future<Map<String, dynamic>?> getCustomer(int id) async {
+  Future<Map<String, dynamic>?> getCustomer(dynamic id) async {
     final db = await instance.database;
+    final idStr = id.toString().trim();
+    final idInt = int.tryParse(idStr);
+
     final results = await db.rawQuery('''
       SELECT c.*, 
-        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id OR CAST(customer_id AS TEXT) = CAST(c.id AS TEXT)), 0) as remaining_balance
       FROM customers c 
-      WHERE c.id = ?
-    ''', [id]);
+      WHERE c.id = ? OR CAST(c.id AS TEXT) = ? ${idInt != null ? 'OR c.id = ?' : ''}
+    ''', idInt != null ? [idStr, idStr, idInt] : [idStr, idStr]);
     if (results.isNotEmpty) return results.first;
     return null;
   }
 
-  Future<void> deleteCustomer(int id) async {
+  Future<void> deleteCustomer(dynamic id) async {
     final db = await instance.database;
-    await db.delete('customers', where: 'id = ?', whereArgs: [id]);
-    // Cascade delete is defined on the foreign key for debts, 
-    // but sqflite needs PRAGMA foreign_keys = ON to respect it automatically.
-    // So we'll explicitly delete debts as well just in case.
-    await db.delete('debts', where: 'customer_id = ?', whereArgs: [id]);
-    await db.delete('payments', where: 'customer_id = ?', whereArgs: [id]);
+    final idStr = id.toString();
+    await db.transaction((txn) async {
+      await txn.delete('payments', where: 'customer_id = ?', whereArgs: [idStr]);
+      await txn.delete('debts', where: 'customer_id = ?', whereArgs: [idStr]);
+      await txn.delete('customers', where: 'id = ?', whereArgs: [idStr]);
+    });
   }
 
-  Future<void> clearSyncedCustomers() async {
+  // ==========================================
+  // --- Debts Methods ---
+  // ==========================================
+  Future<String> saveDebt(Map<String, dynamic> debt) async {
     final db = await instance.database;
-    await db.delete('customers', where: 'is_synced = 1');
-  }
+    final String debtId = debt['id']?.toString() ?? _uuid.v4();
+    final String customerId = debt['customer_id'].toString();
+    final double amount = double.parse(debt['amount'].toString());
+    final double paid = double.parse((debt['paid'] ?? 0).toString());
+    final String status = debt['status'] ?? (paid >= amount ? 'paid' : (paid > 0 ? 'partial' : 'unpaid'));
 
-  // --- Debts ---
-  Future<void> saveDebt(Map<String, dynamic> debt, {bool isSynced = true}) async {
-    final db = await instance.database;
-    // If it's from local DB, it has remote_id. If from server, it has id which is the remote_id.
-    final remoteId = debt['remote_id'] ?? debt['id'];
-    
-    // Check if debt with this remote_id already exists
-    final existing = await db.query('debts', where: 'remote_id = ?', whereArgs: [remoteId]);
-    
     final data = {
-      'remote_id': remoteId,
-      'tenant_id': debt['tenant_id'],
-      'branch_id': debt['branch_id'],
-      'customer_id': debt['customer_id'],
-      'amount': debt['amount'],
-      'paid': debt['paid'] ?? 0,
-      'status': debt['status'] ?? 'unpaid',
+      'id': debtId,
+      'customer_id': customerId,
+      'amount': amount,
+      'paid': paid,
+      'status': status,
       'due_date': debt['due_date'],
       'notes': debt['notes'],
-      'created_at': debt['created_at'],
-      'is_synced': isSynced ? 1 : 0,
+      'created_at': debt['created_at'] ?? DateTime.now().toIso8601String(),
     };
 
-    if (existing.isNotEmpty) {
-      await db.update('debts', data, where: 'remote_id = ?', whereArgs: [remoteId]);
+    await db.transaction((txn) async {
+      await txn.insert('debts', data, conflictAlgorithm: ConflictAlgorithm.replace);
+      // Automatically refresh customer remaining balance
+      await _refreshCustomerBalance(txn, customerId);
+    });
+
+    return debtId;
+  }
+
+  Future<void> deleteDebt(dynamic id) async {
+    final db = await instance.database;
+    final debtId = id.toString();
+    await db.transaction((txn) async {
+      final res = await txn.query('debts', columns: ['customer_id'], where: 'id = ?', whereArgs: [debtId]);
+      if (res.isNotEmpty) {
+        final customerId = res.first['customer_id'].toString();
+        await txn.delete('payments', where: 'debt_id = ?', whereArgs: [debtId]);
+        await txn.delete('debts', where: 'id = ?', whereArgs: [debtId]);
+        await _refreshCustomerBalance(txn, customerId);
+      }
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getCustomerDebts(dynamic customerId) async {
+    final db = await instance.database;
+    final idStr = customerId.toString().trim();
+    final idInt = int.tryParse(idStr);
+
+    if (idInt != null) {
+      return await db.rawQuery('''
+        SELECT * FROM debts 
+        WHERE customer_id = ? OR customer_id = ? OR CAST(customer_id AS TEXT) = ?
+        ORDER BY created_at DESC
+      ''', [idStr, idInt, idStr]);
     } else {
-      await db.insert('debts', data);
+      return await db.rawQuery('''
+        SELECT * FROM debts 
+        WHERE customer_id = ? OR CAST(customer_id AS TEXT) = ?
+        ORDER BY created_at DESC
+      ''', [idStr, idStr]);
     }
-  }
-
-  Future<void> deleteDebtByRemoteId(int remoteId) async {
-    final db = await instance.database;
-    await db.delete('debts', where: 'remote_id = ?', whereArgs: [remoteId]);
-  }
-
-  Future<void> clearAllSyncedDebts() async {
-    final db = await instance.database;
-    await db.delete('debts', where: 'is_synced = 1');
-  }
-
-  Future<void> clearSyncedCustomerDebts(int customerId) async {
-    final db = await instance.database;
-    await db.delete('debts', where: 'customer_id = ? AND is_synced = 1', whereArgs: [customerId]);
-  }
-
-  Future<List<Map<String, dynamic>>> getCustomerDebts(int customerId) async {
-    final db = await instance.database;
-    return await db.query('debts', where: 'customer_id = ?', whereArgs: [customerId], orderBy: 'created_at DESC');
   }
 
   Future<List<Map<String, dynamic>>> getAllDebts() async {
@@ -236,65 +447,130 @@ class LocalDbService {
     return await db.rawQuery('''
       SELECT d.*, c.name as customer_name 
       FROM debts d 
-      LEFT JOIN customers c ON d.customer_id = c.id 
+      LEFT JOIN customers c ON (d.customer_id = c.id OR CAST(d.customer_id AS TEXT) = CAST(c.id AS TEXT)) 
       ORDER BY d.created_at DESC
     ''');
   }
 
-  // --- Payments ---
-  Future<void> savePayment(Map<String, dynamic> payment, {bool isSynced = true}) async {
+  // ==========================================
+  // --- Payments & FIFO Settlement Engine ---
+  // ==========================================
+  /// Applies customer payment atomically using FIFO (First-In, First-Out) rule.
+  /// Oldest unpaid debts are liquidated first.
+  Future<String> recordPaymentTransaction({
+    required dynamic customerId,
+    required double amount,
+    String? specificDebtId,
+  }) async {
+    if (amount <= 0) {
+      throw ArgumentError('مبلغ الدفعة يجب أن يكون أكبر من الصفر');
+    }
+
     final db = await instance.database;
-    final remoteId = payment['remote_id'] ?? payment['id'];
-    
-    final existing = await db.query('payments', where: 'remote_id = ?', whereArgs: [remoteId]);
-    
-    // Some payments from backend might not have customer_id directly (they have debt_id).
-    // We should ensure customer_id is stored if possible, or derive it.
-    // If it's passed from the app, it will have customer_id.
-    int? customerId = payment['customer_id'];
-    if (customerId == null && payment['debt_id'] != null) {
-      final debtRes = await db.query('debts', where: 'remote_id = ?', whereArgs: [payment['debt_id']]);
-      if (debtRes.isNotEmpty) {
-        customerId = debtRes.first['customer_id'] as int?;
+    final String custId = customerId.toString();
+    final int? idInt = int.tryParse(custId);
+    final String paymentId = _uuid.v4();
+    final String now = DateTime.now().toIso8601String();
+
+    await db.transaction((txn) async {
+      // 1. Verify customer exists
+      final custRes = await txn.rawQuery(
+        'SELECT * FROM customers WHERE id = ? OR CAST(id AS TEXT) = ? ${idInt != null ? 'OR id = ?' : ''}',
+        idInt != null ? [custId, custId, idInt] : [custId, custId],
+      );
+      if (custRes.isEmpty) {
+        throw StateError('العميل غير موجود في قاعدة البيانات');
       }
-    }
 
-    final data = {
-      'remote_id': remoteId,
-      'tenant_id': payment['tenant_id'],
-      'branch_id': payment['branch_id'],
-      'debt_id': payment['debt_id'],
-      'customer_id': customerId,
-      'amount': payment['amount'],
-      'created_at': payment['created_at'],
-      'is_synced': isSynced ? 1 : 0,
-    };
+      // 2. Fetch debts sorted ASCENDING by created_at (FIFO)
+      final debts = await txn.rawQuery('''
+        SELECT * FROM debts 
+        WHERE (customer_id = ? OR CAST(customer_id AS TEXT) = ? ${idInt != null ? 'OR customer_id = ?' : ''})
+          AND status != 'paid'
+        ORDER BY created_at ASC
+      ''', idInt != null ? [custId, custId, idInt] : [custId, custId]);
 
-    if (existing.isNotEmpty) {
-      await db.update('payments', data, where: 'remote_id = ?', whereArgs: [remoteId]);
+      double remainingPayment = amount;
+
+      for (var debt in debts) {
+        if (remainingPayment <= 0) break;
+
+        final debtId = debt['id'].toString();
+        final debtAmount = double.parse(debt['amount'].toString());
+        final debtPaid = double.parse((debt['paid'] ?? 0).toString());
+        final debtRemaining = debtAmount - debtPaid;
+
+        if (debtRemaining > 0) {
+          final double amountToApply = remainingPayment >= debtRemaining ? debtRemaining : remainingPayment;
+          final double newPaid = debtPaid + amountToApply;
+          final String newStatus = (newPaid >= debtAmount) ? 'paid' : 'partial';
+
+          await txn.update(
+            'debts',
+            {'paid': newPaid, 'status': newStatus},
+            where: 'id = ?',
+            whereArgs: [debtId],
+          );
+
+          remainingPayment -= amountToApply;
+        }
+      }
+
+      // 3. Record payment in payments table
+      await txn.insert('payments', {
+        'id': paymentId,
+        'debt_id': specificDebtId?.toString(),
+        'customer_id': custId,
+        'amount': amount,
+        'created_at': now,
+      });
+
+      // 4. Update customer remaining balance
+      await _refreshCustomerBalance(txn, custId);
+    });
+
+    return paymentId;
+  }
+
+  Future<void> _refreshCustomerBalance(DatabaseExecutor txn, String customerId) async {
+    final idStr = customerId.toString().trim();
+    final idInt = int.tryParse(idStr);
+
+    final balanceRes = await txn.rawQuery('''
+      SELECT COALESCE(SUM(amount - paid), 0) as balance 
+      FROM debts 
+      WHERE customer_id = ? OR CAST(customer_id AS TEXT) = ? ${idInt != null ? 'OR customer_id = ?' : ''}
+    ''', idInt != null ? [idStr, idStr, idInt] : [idStr, idStr]);
+
+    final double balance = (balanceRes.isNotEmpty && balanceRes.first['balance'] != null)
+        ? double.parse(balanceRes.first['balance'].toString())
+        : 0.0;
+
+    await txn.rawUpdate('''
+      UPDATE customers 
+      SET remaining_balance = ? 
+      WHERE id = ? OR CAST(id AS TEXT) = ? ${idInt != null ? 'OR id = ?' : ''}
+    ''', idInt != null ? [balance < 0 ? 0.0 : balance, idStr, idStr, idInt] : [balance < 0 ? 0.0 : balance, idStr, idStr]);
+  }
+
+  Future<List<Map<String, dynamic>>> getCustomerPayments(dynamic customerId) async {
+    final db = await instance.database;
+    final idStr = customerId.toString().trim();
+    final idInt = int.tryParse(idStr);
+
+    if (idInt != null) {
+      return await db.rawQuery('''
+        SELECT * FROM payments 
+        WHERE customer_id = ? OR customer_id = ? OR CAST(customer_id AS TEXT) = ?
+        ORDER BY created_at DESC
+      ''', [idStr, idInt, idStr]);
     } else {
-      await db.insert('payments', data);
+      return await db.rawQuery('''
+        SELECT * FROM payments 
+        WHERE customer_id = ? OR CAST(customer_id AS TEXT) = ?
+        ORDER BY created_at DESC
+      ''', [idStr, idStr]);
     }
-  }
-
-  Future<void> deletePaymentByRemoteId(int remoteId) async {
-    final db = await instance.database;
-    await db.delete('payments', where: 'remote_id = ?', whereArgs: [remoteId]);
-  }
-
-  Future<void> clearAllSyncedPayments() async {
-    final db = await instance.database;
-    await db.delete('payments', where: 'is_synced = 1');
-  }
-
-  Future<void> clearSyncedCustomerPayments(int customerId) async {
-    final db = await instance.database;
-    await db.delete('payments', where: 'customer_id = ? AND is_synced = 1', whereArgs: [customerId]);
-  }
-
-  Future<List<Map<String, dynamic>>> getCustomerPayments(int customerId) async {
-    final db = await instance.database;
-    return await db.query('payments', where: 'customer_id = ?', whereArgs: [customerId], orderBy: 'created_at DESC');
   }
 
   Future<List<Map<String, dynamic>>> getAllPayments() async {
@@ -307,130 +583,13 @@ class LocalDbService {
     ''');
   }
 
-  // --- Sync Queue ---
-  Future<void> addToSyncQueue(String operation, String payload) async {
-    final db = await instance.database;
-    await db.insert('sync_queue', {
-      'operation': operation,
-      'payload': payload,
-      'created_at': DateTime.now().toIso8601String(),
-    });
-  }
-
-  Future<List<Map<String, dynamic>>> getSyncQueue() async {
-    final db = await instance.database;
-    return await db.query('sync_queue', orderBy: 'created_at ASC');
-  }
-
-  Future<Map<String, dynamic>?> getSyncQueueItem(int id) async {
-    final db = await instance.database;
-    final results = await db.query('sync_queue', where: 'id = ?', whereArgs: [id]);
-    if (results.isNotEmpty) return results.first;
-    return null;
-  }
-
-  Future<void> replaceCustomerTempId(int tempId, int newId) async {
-    final db = await instance.database;
-    
-    // 1. Update primary key and sync status in customers table
-    await db.update('customers', {'id': newId, 'is_synced': 1}, where: 'id = ?', whereArgs: [tempId]);
-
-    // 2. Update foreign keys in local tables
-    await db.update('debts', {'customer_id': newId}, where: 'customer_id = ?', whereArgs: [tempId]);
-    await db.update('payments', {'customer_id': newId}, where: 'customer_id = ?', whereArgs: [tempId]);
-    
-    // 2. Update payloads in sync_queue
-    final queue = await db.query('sync_queue');
-    for (var item in queue) {
-      if (item['payload'] != null) {
-        String payloadStr = item['payload'] as String;
-        // Simple string replacement could be risky, but since it's JSON, parsing is safer
-        try {
-          final Map<String, dynamic> payload = jsonDecode(payloadStr);
-          bool modified = false;
-          
-          if (payload['customer_id'] == tempId) {
-            payload['customer_id'] = newId;
-            modified = true;
-          }
-          if (payload['id'] == tempId && item['operation'] == 'update_customer') {
-            payload['id'] = newId;
-            modified = true;
-          }
-          
-          if (modified) {
-            await db.update(
-              'sync_queue', 
-              {'payload': jsonEncode(payload)}, 
-              where: 'id = ?', 
-              whereArgs: [item['id']]
-            );
-          }
-        } catch (e) {
-          // ignore parsing error
-        }
-      }
-    }
-  }
-
-  Future<void> replaceDebtTempId(int tempId, int newId) async {
-    final db = await instance.database;
-    
-    // 1. Update primary key and sync status in debts table
-    await db.update('debts', {'remote_id': newId, 'is_synced': 1}, where: 'remote_id = ?', whereArgs: [tempId]);
-
-    // 2. Update foreign keys in local tables
-    await db.update('payments', {'debt_id': newId}, where: 'debt_id = ?', whereArgs: [tempId]);
-    
-    // 2. Update payloads in sync_queue
-    final queue = await db.query('sync_queue');
-    for (var item in queue) {
-      if (item['payload'] != null) {
-        String payloadStr = item['payload'] as String;
-        try {
-          final Map<String, dynamic> payload = jsonDecode(payloadStr);
-          bool modified = false;
-          
-          if (payload['debt_id'] == tempId) {
-            payload['debt_id'] = newId;
-            modified = true;
-          }
-          
-          if (modified) {
-            await db.update(
-              'sync_queue', 
-              {'payload': jsonEncode(payload)}, 
-              where: 'id = ?', 
-              whereArgs: [item['id']]
-            );
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-    }
-  }
-
-  Future<void> markPaymentAsSynced(int id) async {
-    final db = await instance.database;
-    await db.update('payments', {'is_synced': 1}, where: 'id = ?', whereArgs: [id]);
-  }
-
-  Future<void> markCustomerAsSynced(int id) async {
-    final db = await instance.database;
-    await db.update('customers', {'is_synced': 1}, where: 'id = ?', whereArgs: [id]);
-  }
-
-  Future<void> removeFromSyncQueue(int id) async {
-    final db = await instance.database;
-    await db.delete('sync_queue', where: 'id = ?', whereArgs: [id]);
-  }
-
   Future<void> clearDatabase() async {
     final db = await instance.database;
-    await db.delete('customers');
-    await db.delete('debts');
-    await db.delete('payments');
-    await db.delete('sync_queue');
+    await db.transaction((txn) async {
+      await txn.delete('payments');
+      await txn.delete('debts');
+      await txn.delete('customers');
+      await txn.delete('business_profile');
+    });
   }
 }

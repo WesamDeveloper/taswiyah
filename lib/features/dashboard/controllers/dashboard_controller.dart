@@ -1,18 +1,15 @@
-import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/database/local_db_service.dart';
-import '../../../core/network/api_client.dart';
-import '../../../core/network/sync_service.dart';
 
 class DashboardController extends GetxController {
-  final ApiClient _apiClient = ApiClient();
-  final SyncService _syncService = Get.find<SyncService>();
+  final LocalDbService _dbService = LocalDbService.instance;
   
-  var isLoading = true.obs;
+  var isLoading = false.obs;
   
   var userName = 'مستخدم'.obs;
-  var companyName = 'الفرع'.obs;
+  var companyName = 'متجري'.obs;
   var avatarIcon = 'person'.obs;
   
   var totalDebts = 0.0.obs;
@@ -24,7 +21,7 @@ class DashboardController extends GetxController {
   var chartCollections = <double>[0,0,0,0,0,0,0].obs;
   var chartDebts = <double>[0,0,0,0,0,0,0].obs;
   
-  var recentActivity = [].obs;
+  var recentActivity = <Map<String, dynamic>>[].obs;
 
   @override
   void onInit() {
@@ -33,84 +30,38 @@ class DashboardController extends GetxController {
   }
 
   Future<void> fetchStats() async {
-    isLoading.value = true;
     try {
-      // Aggregate offline local data directly
       await _aggregateLocalStats();
-      if (_syncService.isOnline.value) {
-        _fetchUserInfoAsync();
-      }
     } catch (e) {
-      Get.snackbar('تنبيه', 'تعذر جلب الإحصائيات المحلية: $e');
+      debugPrint('Dashboard stats note: $e');
     } finally {
       isLoading.value = false;
     }
   }
 
-  Future<void> _fetchUserInfoAsync() async {
-    try {
-      final response = await _apiClient.get('/auth/me');
-      if (response.statusCode == 200) {
-        final userData = response.data['data'];
-        final prefs = await SharedPreferences.getInstance();
-        
-        final uName = userData['name'] ?? 'مستخدم';
-        String cName = 'الفرع';
-        if (userData['tenant'] != null) {
-          cName = userData['tenant']['name'] ?? 'الفرع';
-        }
-        
-        await prefs.setString('user_name', uName);
-        await prefs.setString('company_name', cName);
-        
-        if (userData['auto_remind_day'] != null) {
-          await prefs.setInt('auto_remind_day', userData['auto_remind_day']);
-        }
-        
-        userName.value = uName;
-        companyName.value = cName;
-      }
-    } catch (_) {
-      // Ignore network errors in background
-    }
-  }
-
   Future<void> _loadUserPreferences() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      userName.value = prefs.getString('user_name') ?? 'مستخدم';
-      companyName.value = prefs.getString('company_name') ?? 'الفرع';
-    } catch (_) {}
-  }
+      // 1. Try local SQLite Business Profile first
+      final profile = await _dbService.getBusinessProfile();
+      if (profile != null) {
+        userName.value = profile['owner_name'] ?? userName.value;
+        companyName.value = profile['business_name'] ?? companyName.value;
+        avatarIcon.value = profile['avatar_icon'] ?? avatarIcon.value;
+      }
 
-  void _populateData(Map<String, dynamic> data) {
-    userName.value = data['user_name'] ?? userName.value;
-    companyName.value = data['company_name'] ?? companyName.value;
-    avatarIcon.value = data['avatar_icon'] ?? 'person';
-    totalDebts.value = double.parse(data['total_debts'].toString());
-    totalCollected.value = double.parse(data['total_collected'].toString());
-    remainingBalance.value = double.parse(data['remaining_balance'].toString());
-    overdueCount.value = data['overdue_count'];
-    activeCustomers.value = data['active_customers'];
-    
-    if (data['chart_data'] != null) {
-      chartCollections.value = List<double>.from(data['chart_data']['collections'].map((e) => double.parse(e.toString())));
-      chartDebts.value = List<double>.from(data['chart_data']['new_debts'].map((e) => double.parse(e.toString())));
-    }
-    
-    if (data['recent_activity'] != null) {
-      recentActivity.value = data['recent_activity'];
-    }
+      // 2. Fallback to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      userName.value = prefs.getString('user_name') ?? userName.value;
+      companyName.value = prefs.getString('company_name') ?? companyName.value;
+    } catch (_) {}
   }
 
   Future<void> _aggregateLocalStats() async {
     await _loadUserPreferences();
-    final dbService = LocalDbService.instance;
-    final allCustomers = await dbService.getAllCustomers();
-    final allDebts = await dbService.getAllDebts();
-    final allPayments = await dbService.getAllPayments();
+    final allCustomers = await _dbService.getAllCustomers();
+    final allDebts = await _dbService.getAllDebts();
+    final allPayments = await _dbService.getAllPayments();
 
-    double tDebts = 0;
     double tCollected = 0;
     double rBalance = 0;
     int aCustomers = allCustomers.length;
@@ -156,7 +107,7 @@ class DashboardController extends GetxController {
       }
     }
 
-    totalDebts.value = rBalance; // Ensure total debts matches the sum of remaining balances
+    totalDebts.value = rBalance;
     totalCollected.value = tCollected;
     remainingBalance.value = rBalance;
     activeCustomers.value = aCustomers;
@@ -164,10 +115,9 @@ class DashboardController extends GetxController {
     
     chartCollections.value = collections;
     chartDebts.value = debts7Days;
-    overdueCount.value = oCount;
 
     // Aggregate recent activity
-    List combined = [];
+    List<Map<String, dynamic>> combined = [];
     for (var d in allDebts) {
       combined.add({
         'id': d['id'],
@@ -188,8 +138,8 @@ class DashboardController extends GetxController {
     }
 
     combined.sort((a, b) {
-      String dateA = a['created_at'] ?? '';
-      String dateB = b['created_at'] ?? '';
+      String dateA = a['created_at']?.toString() ?? '';
+      String dateB = b['created_at']?.toString() ?? '';
       return dateB.compareTo(dateA); // DESC
     });
 
