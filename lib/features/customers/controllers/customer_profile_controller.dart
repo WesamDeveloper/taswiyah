@@ -8,6 +8,7 @@ import '../../../core/services/export_service.dart';
 import '../../dashboard/controllers/dashboard_controller.dart';
 import '../../debts/controllers/debts_controller.dart';
 import '../controllers/customers_controller.dart';
+import '../models/customer_trust_status.dart';
 
 class CustomerProfileController extends GetxController {
   final LocalDbService _dbService = LocalDbService.instance;
@@ -39,7 +40,7 @@ class CustomerProfileController extends GetxController {
       final localCust = await _dbService.getCustomer(customerId);
 
       if (localCust != null) {
-        customer.assignAll(localCust);
+        customer.assignAll(Map<String, dynamic>.from(localCust));
       }
 
       final localDebts = await _dbService.getCustomerDebts(customerId);
@@ -52,8 +53,9 @@ class CustomerProfileController extends GetxController {
         calculatedRemaining += (amount - paid);
       }
 
-      customer['remaining_balance'] = calculatedRemaining < 0 ? 0.0 : calculatedRemaining;
-      customer.refresh();
+      final updatedCust = Map<String, dynamic>.from(customer);
+      updatedCust['remaining_balance'] = calculatedRemaining < 0 ? 0.0 : calculatedRemaining;
+      customer.assignAll(updatedCust);
 
       _updateTransactionsList(localDebts, localPayments);
     } catch (e) {
@@ -152,7 +154,7 @@ class CustomerProfileController extends GetxController {
   }
 
   /// Atomic FIFO payment reception
-  Future<void> receivePayment(double amount) async {
+  Future<void> receivePayment(double amount, {String? notes}) async {
     if (amount <= 0) {
       Get.snackbar('تنبيه', 'يجب أن يكون مبلغ السداد أكبر من الصفر');
       return;
@@ -162,6 +164,7 @@ class CustomerProfileController extends GetxController {
       await _dbService.recordPaymentTransaction(
         customerId: customerId,
         amount: amount,
+        notes: notes,
       );
 
       await fetchProfile();
@@ -195,7 +198,7 @@ class CustomerProfileController extends GetxController {
   var isSendingReminder = false.obs;
 
   /// Sends reminder directly via WhatsApp using local url_launcher
-  Future<void> sendReminder() async {
+  Future<void> sendWhatsAppReminder() async {
     final currentCustomer = customer;
     final remaining = double.tryParse((currentCustomer['remaining_balance'] ?? 0).toString()) ?? 0.0;
     final phone = currentCustomer['primary_phone']?.toString().trim() ?? '';
@@ -236,6 +239,50 @@ class CustomerProfileController extends GetxController {
     }
   }
 
+  /// Sends reminder via standard SMS
+  Future<void> sendSmsReminder() async {
+    final currentCustomer = customer;
+    final remaining = double.tryParse((currentCustomer['remaining_balance'] ?? 0).toString()) ?? 0.0;
+    final phone = currentCustomer['primary_phone']?.toString().trim() ?? '';
+    final name = currentCustomer['name']?.toString() ?? 'عميلنا العزيز';
+
+    if (remaining <= 0) {
+      Get.snackbar('تنبيه', 'لا يوجد رصيد متبقي على هذا العميل', backgroundColor: Colors.orange, colorText: Colors.white);
+      return;
+    }
+
+    if (phone.isEmpty) {
+      Get.snackbar('خطأ', 'رقم هاتف العميل غير متوفر', backgroundColor: Colors.red, colorText: Colors.white);
+      return;
+    }
+
+    final cleanPhone = phone.replaceAll(RegExp(r'\D'), '');
+
+    final message = "تذكير رصيد مستحق\n\n"
+        "مرحباً $name،\n"
+        "نود تذكيركم بأن الرصيد المتبقي المستحق عليكم هو: ${remaining.toStringAsFixed(0)} ر.ي.\n"
+        "يرجى التكرم بالسداد عند الاستطاعة. شكراً لتعاملكم معنا!";
+
+    final encodedMessage = Uri.encodeComponent(message);
+    final uri = Uri.parse("sms:$cleanPhone?body=$encodedMessage");
+    final iosUri = Uri.parse("sms:$cleanPhone&body=$encodedMessage");
+
+    try {
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri);
+      } else if (await canLaunchUrl(iosUri)) {
+        await launchUrl(iosUri);
+      } else {
+        Get.snackbar('تنبيه', 'تعذر فتح تطبيق الرسائل النصية', backgroundColor: Colors.orange, colorText: Colors.white);
+      }
+    } catch (e) {
+      Get.snackbar('خطأ', 'تعذر فتح تطبيق الرسائل: $e', backgroundColor: Colors.red, colorText: Colors.white);
+    }
+  }
+
+  /// Default alias
+  Future<void> sendReminder() => sendWhatsAppReminder();
+
   Future<void> updateProfile(String name, String phone) async {
     final cleanName = name.trim();
     final cleanPhone = phone.trim();
@@ -256,6 +303,36 @@ class CustomerProfileController extends GetxController {
       backgroundColor: Colors.green,
       colorText: Colors.white,
     );
+  }
+
+  Future<void> updateTrustStatus(CustomerTrustStatus newStatus) async {
+    try {
+      await _dbService.updateCustomerTrustStatus(customerId, newStatus.dbValue);
+
+      final updated = Map<String, dynamic>.from(customer);
+      updated['trust_status'] = newStatus.dbValue;
+      customer.assignAll(updated);
+
+      if (Get.isRegistered<CustomersController>()) {
+        Get.find<CustomersController>().fetchCustomers();
+      }
+
+      Get.snackbar(
+        'حالة الثقة',
+        'تم تحديث حالة العميل إلى "${newStatus.label}" بنجاح',
+        backgroundColor: Colors.green,
+        colorText: Colors.white,
+        duration: const Duration(seconds: 2),
+      );
+    } catch (e) {
+      debugPrint('updateTrustStatus error: $e');
+      Get.snackbar(
+        'خطأ',
+        'فشل تحديث حالة الثقة: $e',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+    }
   }
 
   Future<void> exportStatement(

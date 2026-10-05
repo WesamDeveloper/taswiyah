@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 
 import '../../../core/theme/app_theme.dart';
 import '../controllers/customers_controller.dart';
+import '../models/customer_trust_status.dart';
 import 'customer_profile_screen.dart';
 
 class CustomersScreen extends StatelessWidget {
@@ -37,33 +38,45 @@ class CustomersScreen extends StatelessWidget {
           );
         }
 
-        if (controller.customers.isEmpty && controller.searchQuery.isEmpty) {
-          return const Center(
-            child: Text('لا توجد بيانات بعد. قم بإضافة عميل جديد.'),
-          );
-        }
-
         return Column(
           children: [
             Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: TextField(
-                onChanged: controller.searchCustomers,
-                decoration: InputDecoration(
-                  hintText: 'ابحث عن اسم العميل أو رقمه...',
-                  prefixIcon: const Icon(Icons.search),
-                  filled: true,
-                  fillColor: Colors.white,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      onChanged: controller.searchCustomers,
+                      decoration: InputDecoration(
+                        hintText: 'ابحث عن اسم العميل أو رقمه...',
+                        prefixIcon: const Icon(Icons.search),
+                        filled: true,
+                        fillColor: Colors.white,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 8),
+                  _buildFilterButton(context),
+                ],
               ),
             ),
             if (controller.customers.isEmpty)
-              const Expanded(
-                child: Center(child: Text('لم يتم العثور على نتائج.')),
+              Expanded(
+                child: Center(
+                  child: Text(
+                    controller.searchQuery.isNotEmpty
+                        ? 'لم يتم العثور على نتائج للبحث.'
+                        : controller.selectedFilter.value != CustomerTrustFilter.all
+                            ? 'لا يوجد عملاء بحالة "${controller.selectedFilter.value.label}".'
+                            : 'لا توجد بيانات بعد. قم بإضافة عميل جديد.',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 15),
+                  ),
+                ),
               )
             else
               Expanded(
@@ -73,6 +86,7 @@ class CustomersScreen extends StatelessWidget {
                   itemBuilder: (context, index) {
                     final customer = controller.customers[index];
                     final balance = customer['remaining_balance'] ?? 0;
+                    final trustStatus = customer['trust_status'] ?? customer['trustStatus'] ?? 'unknown';
 
                     return Card(
                           margin: const EdgeInsets.only(bottom: 12),
@@ -91,17 +105,59 @@ class CustomersScreen extends StatelessWidget {
                             contentPadding: const EdgeInsets.all(16),
                             leading: CircleAvatar(
                               backgroundColor: AppTheme.primaryColor
-                                  .withOpacity(0.1),
+                                  .withValues(alpha: 0.1),
                               child: const Icon(
                                 Icons.business,
                                 color: AppTheme.primaryColor,
                               ),
                             ),
-                            title: Text(
-                              customer['name'] ?? 'بدون اسم',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
+                            title: Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    customer['name'] ?? 'بدون اسم',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (trustStatus == 'trusted') ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.green.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: const Text(
+                                      'موثوق',
+                                      style: TextStyle(
+                                        color: Colors.green,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ] else if (trustStatus == 'untrusted') ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: Colors.orange.shade800.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      'غير موثوق',
+                                      style: TextStyle(
+                                        color: Colors.orange.shade800,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
                             ),
                             subtitle: Text(
                               customer['primary_phone'] ?? '',
@@ -146,6 +202,104 @@ class CustomersScreen extends StatelessWidget {
         onPressed: () => _showAddCustomerDialog(context),
         child: const Icon(Icons.person_add, color: Colors.white),
       ).animate().scale(delay: 500.ms),
+    );
+  }
+
+  Widget _buildFilterButton(BuildContext context) {
+    final currentFilter = controller.selectedFilter.value;
+    final isFiltered = currentFilter != CustomerTrustFilter.all;
+
+    return Theme(
+      data: Theme.of(context).copyWith(
+        popupMenuTheme: PopupMenuThemeData(
+          color: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+      child: PopupMenuButton<CustomerTrustFilter>(
+        tooltip: 'فلترة حسب حالة الثقة',
+        initialValue: currentFilter,
+        onSelected: (filter) => controller.setFilter(filter),
+        elevation: 4,
+        offset: const Offset(0, 52),
+        itemBuilder: (context) => [
+          const PopupMenuItem<CustomerTrustFilter>(
+            enabled: false,
+            height: 36,
+            child: Text(
+              'حالة العملاء',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          const PopupMenuDivider(height: 8),
+          ...CustomerTrustFilter.values.map((filter) {
+            final isSelected = currentFilter == filter;
+            return PopupMenuItem<CustomerTrustFilter>(
+              value: filter,
+              height: 40,
+              child: Row(
+                children: [
+                  Icon(
+                    isSelected ? Icons.check_circle : Icons.circle_outlined,
+                    size: 18,
+                    color: isSelected ? AppTheme.primaryColor : Colors.grey.shade400,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    filter.label,
+                    style: TextStyle(
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      color: isSelected ? AppTheme.primaryColor : Colors.black87,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+        child: Container(
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isFiltered ? AppTheme.primaryColor : Colors.grey.shade300,
+              width: 1.5,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.filter_list,
+                size: 20,
+                color: isFiltered ? AppTheme.primaryColor : Colors.grey.shade700,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                currentFilter.label,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: isFiltered ? AppTheme.primaryColor : Colors.black87,
+                  fontSize: 14,
+                ),
+              ),
+              const SizedBox(width: 4),
+              Icon(
+                Icons.arrow_drop_down,
+                size: 18,
+                color: isFiltered ? AppTheme.primaryColor : Colors.grey.shade700,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -217,7 +371,7 @@ class CustomersScreen extends StatelessWidget {
                     ),
                   ),
                   style: TextButton.styleFrom(
-                    backgroundColor: AppTheme.primaryColor.withOpacity(0.1),
+                    backgroundColor: AppTheme.primaryColor.withValues(alpha: 0.1),
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 8,

@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/local_db_service.dart';
 import '../../dashboard/controllers/dashboard_controller.dart';
+import '../models/customer_trust_status.dart';
 
 class CustomersController extends GetxController {
   final LocalDbService _dbService = LocalDbService.instance;
@@ -12,6 +13,7 @@ class CustomersController extends GetxController {
   var isLoading = false.obs;
   var customers = <Map<String, dynamic>>[].obs;
   var searchQuery = ''.obs;
+  var selectedFilter = CustomerTrustFilter.all.obs;
 
   @override
   void onInit() {
@@ -30,10 +32,14 @@ class CustomersController extends GetxController {
   }
 
   Future<void> _refreshLocalList() async {
-    if (searchQuery.value.isEmpty) {
-      customers.value = await _dbService.getAllCustomers();
+    final filterValue = selectedFilter.value.dbValue;
+    if (searchQuery.value.trim().isEmpty) {
+      customers.value = await _dbService.getAllCustomers(trustStatus: filterValue);
     } else {
-      customers.value = await _dbService.searchCustomers(searchQuery.value);
+      customers.value = await _dbService.searchCustomers(
+        searchQuery.value.trim(),
+        trustStatus: filterValue,
+      );
     }
   }
 
@@ -42,12 +48,18 @@ class CustomersController extends GetxController {
     _refreshLocalList();
   }
 
+  void setFilter(CustomerTrustFilter filter) {
+    selectedFilter.value = filter;
+    _refreshLocalList();
+  }
+
   Future<bool> addCustomer(String name, String phone) async {
     final cleanName = name.trim();
     final cleanPhone = phone.trim();
 
-    // Check local duplicate
-    bool exists = customers.any((c) => 
+    // Check duplicate across all customers in DB
+    final allCustomers = await _dbService.getAllCustomers();
+    bool exists = allCustomers.any((c) => 
       c['name'].toString().trim().toLowerCase() == cleanName.toLowerCase() || 
       c['primary_phone'].toString().trim() == cleanPhone
     );
@@ -69,6 +81,7 @@ class CustomersController extends GetxController {
       'primary_phone': cleanPhone,
       'remaining_balance': 0.0,
       'notify_on_debt': 0,
+      'trust_status': CustomerTrustStatus.unknown.dbValue,
       'created_at': DateTime.now().toIso8601String(),
     };
 
@@ -86,6 +99,11 @@ class CustomersController extends GetxController {
       colorText: Colors.white
     );
     return true;
+  }
+
+  Future<void> updateCustomerTrustStatus(dynamic id, CustomerTrustStatus status) async {
+    await _dbService.updateCustomerTrustStatus(id, status.dbValue);
+    await _refreshLocalList();
   }
 
   Future<void> deleteCustomer(dynamic id) async {

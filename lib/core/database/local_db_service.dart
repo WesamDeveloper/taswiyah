@@ -21,7 +21,7 @@ class LocalDbService {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 5,
       onConfigure: (db) async {
         await db.execute('PRAGMA foreign_keys = ON;');
       },
@@ -60,6 +60,7 @@ class LocalDbService {
       notify_on_debt INTEGER DEFAULT 0,
       reminder_frequency_days INTEGER,
       next_reminder_date TEXT,
+      trust_status TEXT DEFAULT 'unknown',
       created_at TEXT
     );
     ''');
@@ -86,6 +87,7 @@ class LocalDbService {
       debt_id TEXT,
       customer_id TEXT NOT NULL,
       amount REAL NOT NULL,
+      notes TEXT,
       created_at TEXT,
       FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
       FOREIGN KEY (debt_id) REFERENCES debts (id) ON DELETE SET NULL
@@ -99,6 +101,7 @@ class LocalDbService {
   Future<void> _createIndexes(DatabaseExecutor db) async {
     await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_name ON customers (name);');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers (primary_phone);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_trust_status ON customers (trust_status);');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_debts_customer ON debts (customer_id);');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_debts_status ON debts (status);');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_payments_customer ON payments (customer_id);');
@@ -249,6 +252,31 @@ class LocalDbService {
       // 6. Create Indexes
       await _createIndexes(db);
     }
+
+    if (oldVersion < 4) {
+      // Safe Migration to v4:
+      // Add trust_status column to customers table if not already present
+      final columns = await db.rawQuery('PRAGMA table_info(customers);');
+      final hasTrustStatus = columns.any((col) => col['name'] == 'trust_status');
+      if (!hasTrustStatus) {
+        await db.execute("ALTER TABLE customers ADD COLUMN trust_status TEXT DEFAULT 'unknown';");
+      }
+      // Ensure all existing customers have trust_status = 'unknown'
+      await db.execute("UPDATE customers SET trust_status = 'unknown' WHERE trust_status IS NULL OR trust_status = '';");
+
+      // Create index for trust_status filtering
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_customers_trust_status ON customers (trust_status);');
+    }
+
+    if (oldVersion < 5) {
+      // Safe Migration to v5:
+      // Add notes column to payments table if not already present
+      final columns = await db.rawQuery('PRAGMA table_info(payments);');
+      final hasNotes = columns.any((col) => col['name'] == 'notes');
+      if (!hasNotes) {
+        await db.execute("ALTER TABLE payments ADD COLUMN notes TEXT;");
+      }
+    }
   }
 
   // ==========================================
@@ -312,6 +340,8 @@ class LocalDbService {
   Future<String> saveCustomer(Map<String, dynamic> customer) async {
     final db = await instance.database;
     final String id = customer['id']?.toString() ?? _uuid.v4();
+    final rawTrust = customer['trust_status'] ?? customer['trustStatus'];
+    final trustStatus = (rawTrust == 'trusted' || rawTrust == 'untrusted') ? rawTrust.toString() : 'unknown';
 
     final data = {
       'id': id,
@@ -324,6 +354,7 @@ class LocalDbService {
       'notify_on_debt': (customer['notify_on_debt'] == 1 || customer['notify_on_debt'] == true) ? 1 : 0,
       'reminder_frequency_days': customer['reminder_frequency_days'],
       'next_reminder_date': customer['next_reminder_date'],
+      'trust_status': trustStatus,
       'created_at': customer['created_at'] ?? DateTime.now().toIso8601String(),
     };
 
@@ -331,25 +362,62 @@ class LocalDbService {
     return id;
   }
 
-  Future<List<Map<String, dynamic>>> getAllCustomers() async {
+  Future<void> updateCustomerTrustStatus(dynamic id, String trustStatus) async {
     final db = await instance.database;
-    return await db.rawQuery('''
-      SELECT c.*, 
-        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
-      FROM customers c 
-      ORDER BY c.name ASC
-    ''');
+    final idStr = id.toString().trim();
+    final idInt = int.tryParse(idStr);
+    final validStatus = (trustStatus == 'trusted' || trustStatus == 'untrusted') ? trustStatus : 'unknown';
+
+    await db.rawUpdate('''
+      UPDATE customers 
+      SET trust_status = ? 
+      WHERE id = ? OR CAST(id AS TEXT) = ? ${idInt != null ? 'OR id = ?' : ''}
+    ''', idInt != null ? [validStatus, idStr, idStr, idInt] : [validStatus, idStr, idStr]);
   }
 
-  Future<List<Map<String, dynamic>>> searchCustomers(String query) async {
+  Future<List<Map<String, dynamic>>> getAllCustomers({String? trustStatus}) async {
     final db = await instance.database;
-    return await db.rawQuery('''
-      SELECT c.*, 
-        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
-      FROM customers c 
-      WHERE c.name LIKE ? OR c.primary_phone LIKE ?
-      ORDER BY c.name ASC
-    ''', ['%$query%', '%$query%']);
+    final List<Map<String, dynamic>> results;
+    if (trustStatus != null && trustStatus.isNotEmpty && trustStatus != 'all') {
+      results = await db.rawQuery('''
+        SELECT c.*, 
+          COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+        FROM customers c 
+        WHERE c.trust_status = ?
+        ORDER BY c.name ASC
+      ''', [trustStatus]);
+    } else {
+      results = await db.rawQuery('''
+        SELECT c.*, 
+          COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+        FROM customers c 
+        ORDER BY c.name ASC
+      ''');
+    }
+    return results.map((row) => Map<String, dynamic>.from(row)).toList();
+  }
+
+  Future<List<Map<String, dynamic>>> searchCustomers(String query, {String? trustStatus}) async {
+    final db = await instance.database;
+    final List<Map<String, dynamic>> results;
+    if (trustStatus != null && trustStatus.isNotEmpty && trustStatus != 'all') {
+      results = await db.rawQuery('''
+        SELECT c.*, 
+          COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+        FROM customers c 
+        WHERE (c.name LIKE ? OR c.primary_phone LIKE ?) AND c.trust_status = ?
+        ORDER BY c.name ASC
+      ''', ['%$query%', '%$query%', trustStatus]);
+    } else {
+      results = await db.rawQuery('''
+        SELECT c.*, 
+          COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id), 0) as remaining_balance
+        FROM customers c 
+        WHERE c.name LIKE ? OR c.primary_phone LIKE ?
+        ORDER BY c.name ASC
+      ''', ['%$query%', '%$query%']);
+    }
+    return results.map((row) => Map<String, dynamic>.from(row)).toList();
   }
 
   Future<Map<String, dynamic>?> getCustomer(dynamic id) async {
@@ -363,7 +431,7 @@ class LocalDbService {
       FROM customers c 
       WHERE c.id = ? OR CAST(c.id AS TEXT) = ? ${idInt != null ? 'OR c.id = ?' : ''}
     ''', idInt != null ? [idStr, idStr, idInt] : [idStr, idStr]);
-    if (results.isNotEmpty) return results.first;
+    if (results.isNotEmpty) return Map<String, dynamic>.from(results.first);
     return null;
   }
 
@@ -461,6 +529,7 @@ class LocalDbService {
     required dynamic customerId,
     required double amount,
     String? specificDebtId,
+    String? notes,
   }) async {
     if (amount <= 0) {
       throw ArgumentError('مبلغ الدفعة يجب أن يكون أكبر من الصفر');
@@ -522,6 +591,7 @@ class LocalDbService {
         'debt_id': specificDebtId?.toString(),
         'customer_id': custId,
         'amount': amount,
+        'notes': notes?.trim(),
         'created_at': now,
       });
 

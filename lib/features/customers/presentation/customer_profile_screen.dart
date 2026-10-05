@@ -5,6 +5,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/export_dialog.dart';
 import '../controllers/customer_profile_controller.dart';
 import '../controllers/customers_controller.dart';
+import '../models/customer_trust_status.dart';
 
 class CustomerProfileScreen extends StatefulWidget {
   final dynamic customerId;
@@ -121,6 +122,8 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
 
         final customer = controller.customer;
         final displayedTx = controller.displayedTransactions;
+        final rawTrust = customer['trust_status'] ?? customer['trustStatus'];
+        final trustStatus = CustomerTrustStatus.fromString(rawTrust?.toString());
 
         // Safely parse remaining balance
         final remaining = double.tryParse(
@@ -161,7 +164,146 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                   customer['primary_phone'] ?? '',
                   style: TextStyle(fontSize: 16, color: Colors.grey.shade600),
                 ),
-                const SizedBox(height: 24),
+                if (trustStatus == CustomerTrustStatus.trusted) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.verified, size: 14, color: Colors.green),
+                        SizedBox(width: 4),
+                        Text(
+                          'عميل موثوق',
+                          style: TextStyle(
+                            color: Colors.green,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ] else if (trustStatus == CustomerTrustStatus.untrusted) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade800.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.warning_amber_rounded,
+                          size: 14,
+                          color: Colors.orange.shade800,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'عميل غير موثوق',
+                          style: TextStyle(
+                            color: Colors.orange.shade800,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 16),
+
+                // Customer Trust Status Card
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  elevation: 0,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(
+                                  Icons.verified_user_outlined,
+                                  size: 20,
+                                  color: AppTheme.primaryColor,
+                                ),
+                                SizedBox(width: 8),
+                                Text(
+                                  'حالة العميل',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.black87,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Text(
+                              trustStatus.label,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: trustStatus == CustomerTrustStatus.trusted
+                                    ? Colors.green
+                                    : trustStatus == CustomerTrustStatus.untrusted
+                                        ? Colors.orange.shade800
+                                        : Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildTrustOption(
+                                status: CustomerTrustStatus.unknown,
+                                isSelected: trustStatus == CustomerTrustStatus.unknown,
+                                icon: Icons.help_outline,
+                                activeColor: Colors.grey.shade700,
+                                onTap: () => controller.updateTrustStatus(CustomerTrustStatus.unknown),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildTrustOption(
+                                status: CustomerTrustStatus.trusted,
+                                isSelected: trustStatus == CustomerTrustStatus.trusted,
+                                icon: Icons.check_circle_outline,
+                                activeColor: Colors.green,
+                                onTap: () => controller.updateTrustStatus(CustomerTrustStatus.trusted),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildTrustOption(
+                                status: CustomerTrustStatus.untrusted,
+                                isSelected: trustStatus == CustomerTrustStatus.untrusted,
+                                icon: Icons.warning_amber_rounded,
+                                activeColor: Colors.orange.shade800,
+                                onTap: () => controller.updateTrustStatus(CustomerTrustStatus.untrusted),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
 
                 // Summary Card
                 Card(
@@ -238,16 +380,21 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                         SizedBox(
                           width: double.infinity,
                           child: OutlinedButton.icon(
-                            onPressed: controller.isSendingReminder.value ? null : () => controller.sendReminder(),
-                            icon: controller.isSendingReminder.value 
-                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.green))
-                              : const Icon(Icons.message, color: Colors.green),
-                            label: Text(
-                              controller.isSendingReminder.value ? 'جاري الإرسال...' : 'إرسال تذكير عبر الواتساب',
-                              style: const TextStyle(color: Colors.green),
+                            onPressed: () => _showReminderOptions(context, controller),
+                            icon: const Icon(Icons.send_to_mobile, color: AppTheme.primaryColor),
+                            label: const Text(
+                              'إرسال تذكير بالرصيد',
+                              style: TextStyle(
+                                color: AppTheme.primaryColor,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                             style: OutlinedButton.styleFrom(
-                              side: const BorderSide(color: Colors.green),
+                              side: const BorderSide(color: AppTheme.primaryColor),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
                             ),
                           ),
                         ),
@@ -427,6 +574,67 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     );
   }
 
+  Widget _buildTrustOption({
+    required CustomerTrustStatus status,
+    required bool isSelected,
+    required IconData icon,
+    required Color activeColor,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+          decoration: BoxDecoration(
+            color: isSelected ? activeColor.withValues(alpha: 0.1) : Colors.grey.shade50,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected ? activeColor : Colors.grey.shade300,
+              width: isSelected ? 1.5 : 1,
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                    size: 15,
+                    color: isSelected ? activeColor : Colors.grey.shade400,
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    icon,
+                    size: 16,
+                    color: isSelected ? activeColor : Colors.grey.shade500,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                status.label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                  color: isSelected ? activeColor : Colors.grey.shade700,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showAddDebtDialog(
     BuildContext context,
     CustomerProfileController controller,
@@ -499,6 +707,7 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
     CustomerProfileController controller,
   ) {
     final amountController = TextEditingController();
+    final notesController = TextEditingController();
     bool isSaving = false;
 
     Get.dialog(
@@ -518,6 +727,14 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                   decoration: const InputDecoration(labelText: 'المبلغ المحصل'),
                   keyboardType: TextInputType.number,
                 ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: notesController,
+                  decoration: const InputDecoration(
+                    labelText: 'ملاحظات (اختياري)',
+                    hintText: 'مثال: تسديد نقدي، حوالة، دفعة...',
+                  ),
+                ),
               ],
             ),
             actions: [
@@ -532,7 +749,10 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                   if (parsedAmount != null && parsedAmount > 0) {
                     setState(() => isSaving = true);
                     try {
-                      await controller.receivePayment(parsedAmount);
+                      await controller.receivePayment(
+                        parsedAmount,
+                        notes: notesController.text.trim(),
+                      );
                       if (context.mounted) Navigator.pop(context);
                     } catch (e) {
                       if (context.mounted) setState(() => isSaving = false);
@@ -711,6 +931,156 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  void _showReminderOptions(
+    BuildContext context,
+    CustomerProfileController controller,
+  ) {
+    final currentCustomer = controller.customer;
+    final remaining = double.tryParse((currentCustomer['remaining_balance'] ?? 0).toString()) ?? 0.0;
+    final phone = currentCustomer['primary_phone']?.toString().trim() ?? '';
+
+    if (remaining <= 0) {
+      Get.snackbar(
+        'تنبيه',
+        'لا يوجد رصيد متبقي على هذا العميل',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+      );
+      return;
+    }
+
+    if (phone.isEmpty) {
+      Get.snackbar(
+        'خطأ',
+        'رقم هاتف العميل غير متوفر لإرسال التذكير',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const Text(
+                  'إرسال تذكير بالرصيد',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'اختر طريقة إرسال التذكير للعميل (${currentCustomer['name'] ?? ''})',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey.shade600,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF25D366).withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.chat,
+                      color: Color(0xFF25D366),
+                      size: 24,
+                    ),
+                  ),
+                  title: const Text(
+                    'واتساب (WhatsApp)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'إرسال رسالة تذكير منسقة عبر تطبيق واتساب',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: Colors.grey.shade200),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    controller.sendWhatsAppReminder();
+                  },
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: AppTheme.primaryColor.withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.sms_outlined,
+                      color: AppTheme.primaryColor,
+                      size: 24,
+                    ),
+                  ),
+                  title: const Text(
+                    'رسالة نصية (SMS)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'إرسال رسالة SMS مباشرة إلى رقم هاتف العميل',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: Colors.grey.shade200),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    controller.sendSmsReminder();
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
