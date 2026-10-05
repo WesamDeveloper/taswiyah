@@ -6,6 +6,7 @@ import 'package:get/get.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../customers/presentation/customers_screen.dart';
 import '../../debts/presentation/debts_screen.dart';
+import '../../debts/presentation/overdue_customers_screen.dart';
 import '../../profile/presentation/profile_screen.dart';
 import '../controllers/dashboard_controller.dart';
 
@@ -106,11 +107,16 @@ class DashboardScreen extends StatelessWidget {
                       children: [
                         Expanded(
                           child: _buildKpiCard(
-                            'فواتير متأخرة',
+                            'متأخرات السداد',
                             '${controller.overdueCount.value}',
                             Icons.warning_amber_rounded,
-                            Colors.orange,
+                            Colors.orange.shade800,
                             400,
+                            subtitle: controller.overduePeriodLabel.value,
+                            onTap: () async {
+                              await Get.to(() => const OverdueCustomersScreen());
+                              controller.fetchStats();
+                            },
                           ),
                         ),
                         const SizedBox(width: 16),
@@ -121,6 +127,10 @@ class DashboardScreen extends StatelessWidget {
                             Icons.people_alt_outlined,
                             AppTheme.primaryColor,
                             500,
+                            onTap: () async {
+                              await Get.to(() => CustomersScreen());
+                              controller.fetchStats();
+                            },
                           ),
                         ),
                       ],
@@ -253,49 +263,90 @@ class DashboardScreen extends StatelessWidget {
     String value,
     IconData icon,
     Color color,
-    int delayMs,
-  ) {
-    return Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.03),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
-              ),
-            ],
+    int delayMs, {
+    VoidCallback? onTap,
+    String? subtitle,
+  }) {
+    final cardContent = Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+        ],
+        border: onTap != null
+            ? Border.all(color: color.withValues(alpha: 0.25), width: 1.2)
+            : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Container(
                 padding: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
+                  color: color.withValues(alpha: 0.1),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Icon(icon, color: color, size: 24),
               ),
-              const SizedBox(height: 16),
-              Text(
-                title,
-                style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
+              if (onTap != null)
+                Icon(
+                  Icons.arrow_forward_ios,
+                  size: 13,
+                  color: color.withValues(alpha: 0.6),
                 ),
-              ),
             ],
           ),
-        )
+          const SizedBox(height: 14),
+          Text(
+            title,
+            style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
+          ),
+          if (subtitle != null && subtitle.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 11,
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+
+    final interactive = onTap != null
+        ? Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(16),
+              child: cardContent,
+            ),
+          )
+        : cardContent;
+
+    return interactive
         .animate()
         .fade(delay: Duration(milliseconds: delayMs))
         .slideY(begin: 0.1, end: 0);

@@ -445,6 +445,79 @@ class LocalDbService {
     });
   }
 
+  /// Returns customers who have outstanding balance and have not made a payment
+  /// for at least [thresholdDays] days (defaults to 30 days).
+  Future<List<Map<String, dynamic>>> getOverdueCustomers({int thresholdDays = 30}) async {
+    final db = await instance.database;
+    final now = DateTime.now();
+
+    final rawCustomers = await db.rawQuery('''
+      SELECT c.*, 
+        COALESCE((SELECT SUM(amount - paid) FROM debts WHERE customer_id = c.id OR CAST(customer_id AS TEXT) = CAST(c.id AS TEXT)), 0) as remaining_balance,
+        (SELECT MAX(created_at) FROM payments WHERE customer_id = c.id OR CAST(customer_id AS TEXT) = CAST(c.id AS TEXT)) as last_payment_date,
+        (SELECT MIN(created_at) FROM debts WHERE (customer_id = c.id OR CAST(customer_id AS TEXT) = CAST(c.id AS TEXT)) AND status != 'paid') as oldest_unpaid_debt_date,
+        (SELECT MIN(due_date) FROM debts WHERE (customer_id = c.id OR CAST(customer_id AS TEXT) = CAST(c.id AS TEXT)) AND status != 'paid' AND due_date IS NOT NULL) as earliest_due_date
+      FROM customers c
+      ORDER BY c.name ASC
+    ''');
+
+    final List<Map<String, dynamic>> overdueList = [];
+
+    for (var row in rawCustomers) {
+      final remaining = double.tryParse((row['remaining_balance'] ?? 0).toString()) ?? 0.0;
+      if (remaining <= 0) continue;
+
+      final lastPaymentStr = row['last_payment_date']?.toString();
+      final oldestDebtStr = row['oldest_unpaid_debt_date']?.toString();
+      final earliestDueDateStr = row['earliest_due_date']?.toString();
+      final customerCreatedStr = row['created_at']?.toString();
+
+      DateTime? referenceDate;
+
+      // If customer has made at least one payment, the date of last payment is reference
+      if (lastPaymentStr != null && lastPaymentStr.isNotEmpty) {
+        referenceDate = DateTime.tryParse(lastPaymentStr);
+      } else if (oldestDebtStr != null && oldestDebtStr.isNotEmpty) {
+        // If no payment was ever made, reference is when their unpaid debt began
+        referenceDate = DateTime.tryParse(oldestDebtStr);
+      } else if (customerCreatedStr != null && customerCreatedStr.isNotEmpty) {
+        referenceDate = DateTime.tryParse(customerCreatedStr);
+      }
+
+      // If an explicit due_date was set on a debt and is earlier, consider it
+      if (earliestDueDateStr != null && earliestDueDateStr.isNotEmpty) {
+        final dueDate = DateTime.tryParse(earliestDueDateStr);
+        if (dueDate != null) {
+          if (referenceDate == null || dueDate.isBefore(referenceDate)) {
+            referenceDate = dueDate;
+          }
+        }
+      }
+
+      referenceDate ??= now;
+
+      final daysWithoutPayment = now.difference(referenceDate).inDays;
+
+      if (daysWithoutPayment >= thresholdDays) {
+        final custMap = Map<String, dynamic>.from(row);
+        custMap['remaining_balance'] = remaining;
+        custMap['days_overdue'] = daysWithoutPayment;
+        custMap['last_payment_date'] = lastPaymentStr;
+        custMap['reference_date'] = referenceDate.toIso8601String();
+        overdueList.add(custMap);
+      }
+    }
+
+    // Sort by days_overdue descending (longest overdue first)
+    overdueList.sort((a, b) {
+      final daysA = a['days_overdue'] as int? ?? 0;
+      final daysB = b['days_overdue'] as int? ?? 0;
+      return daysB.compareTo(daysA);
+    });
+
+    return overdueList;
+  }
+
   // ==========================================
   // --- Debts Methods ---
   // ==========================================

@@ -15,6 +15,8 @@ enum CustomerTrustStatus {
     }
   }
 
+  static CustomerTrustStatus fromDbValue(String? value) => fromString(value);
+
   String get dbValue => name;
 
   String get label {

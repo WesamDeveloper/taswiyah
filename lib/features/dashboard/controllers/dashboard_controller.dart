@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/database/local_db_service.dart';
+import '../../debts/models/overdue_period.dart';
 
 class DashboardController extends GetxController {
   final LocalDbService _dbService = LocalDbService.instance;
@@ -16,6 +17,8 @@ class DashboardController extends GetxController {
   var totalCollected = 0.0.obs;
   var remainingBalance = 0.0.obs;
   var overdueCount = 0.obs;
+  var overdueThresholdDays = OverduePeriod.defaultDays.obs;
+  var overduePeriodLabel = OverduePeriod.getLabelForDays(OverduePeriod.defaultDays).obs;
   var activeCustomers = 0.obs;
   
   var chartCollections = <double>[0,0,0,0,0,0,0].obs;
@@ -53,6 +56,8 @@ class DashboardController extends GetxController {
       final prefs = await SharedPreferences.getInstance();
       userName.value = prefs.getString('user_name') ?? userName.value;
       companyName.value = prefs.getString('company_name') ?? companyName.value;
+      overdueThresholdDays.value = prefs.getInt('overdue_threshold_days') ?? OverduePeriod.defaultDays;
+      overduePeriodLabel.value = OverduePeriod.getLabelForDays(overdueThresholdDays.value);
     } catch (_) {}
   }
 
@@ -74,15 +79,11 @@ class DashboardController extends GetxController {
     List<double> collections = List.filled(7, 0);
     List<double> debts7Days = List.filled(7, 0);
 
+    final overdueList = await _dbService.getOverdueCustomers(thresholdDays: overdueThresholdDays.value);
+    oCount = overdueList.length;
+
     final now = DateTime.now();
     for (var d in allDebts) {
-      if (d['status'] != 'paid' && d['due_date'] != null) {
-        try {
-          final dueDate = DateTime.parse(d['due_date']);
-          if (dueDate.isBefore(now)) oCount++;
-        } catch (_) {}
-      }
-      
       if (d['created_at'] != null) {
         try {
           final date = DateTime.parse(d['created_at']);
