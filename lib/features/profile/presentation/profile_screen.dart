@@ -9,6 +9,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/widgets/export_dialog.dart';
 import '../../auth/controllers/auth_controller.dart';
 import '../../auth/presentation/login_screen.dart';
+import '../../backup/presentation/google_drive_backup_screen.dart';
 import 'edit_profile_screen.dart';
 
 typedef SettingsScreen = ProfileScreen;
@@ -232,6 +233,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ],
                             ),
                           ),
+                        ),
+                        _buildDivider(),
+                        _buildSettingTile(
+                          icon: Icons.cloud_sync_outlined,
+                          iconColor: Colors.blue.shade700,
+                          iconBgColor: Colors.blue.shade50,
+                          title: 'النسخ الاحتياطي والاستعادة',
+                          subtitle: 'حفظ واسترجاع بيانات التطبيق عبر Google Drive بأمان',
+                          trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Colors.grey),
+                          onTap: () => Get.to(() => const GoogleDriveBackupScreen()),
                         ),
                       ],
                     ),

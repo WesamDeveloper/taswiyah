@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/database/local_db_service.dart';
+import '../../backup/presentation/backup_onboarding_screen.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import '../presentation/activation_screen.dart';
 
@@ -93,11 +94,7 @@ class AuthController extends GetxController {
         ownerName: ownerName,
       );
 
-      if (isActivated) {
-        Get.offAll(() => DashboardScreen());
-      } else {
-        Get.offAll(() => ActivationScreen());
-      }
+      _navigateToNextScreen(isActivated, prefs);
     } on FirebaseAuthException catch (e) {
       errorMessage.value = _translateFirebaseAuthError(e.code);
       Get.snackbar(
@@ -253,7 +250,7 @@ class AuthController extends GetxController {
         colorText: Colors.white,
       );
 
-      Get.offAll(() => DashboardScreen());
+      _navigateToNextScreen(true, prefs);
     } catch (e) {
       errorMessage.value = 'فشل التفعيل: ${e.toString()}';
       Get.snackbar(
@@ -264,6 +261,22 @@ class AuthController extends GetxController {
       );
     } finally {
       isLoading.value = false;
+    }
+  }
+
+  void _navigateToNextScreen(bool isActivated, SharedPreferences prefs) {
+    if (!isActivated) {
+      Get.offAll(() => ActivationScreen());
+      return;
+    }
+
+    final hasSeenOnboarding = prefs.getBool(BackupOnboardingScreen.prefsKey) ?? false;
+    if (!hasSeenOnboarding) {
+      Get.offAll(() => BackupOnboardingScreen(
+        onFinished: () => Get.offAll(() => DashboardScreen()),
+      ));
+    } else {
+      Get.offAll(() => DashboardScreen());
     }
   }
 

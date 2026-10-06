@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/theme/app_theme.dart';
+import '../../backup/presentation/backup_onboarding_screen.dart';
 import '../../dashboard/presentation/dashboard_screen.dart';
 import 'activation_screen.dart';
 import 'login_screen.dart';
@@ -30,7 +31,14 @@ class _SplashScreenState extends State<SplashScreen> {
 
     if (isLoggedIn) {
       if (isActivated) {
-        Get.offAll(() => DashboardScreen());
+        final hasSeenOnboarding = prefs.getBool(BackupOnboardingScreen.prefsKey) ?? false;
+        if (!hasSeenOnboarding) {
+          Get.offAll(() => BackupOnboardingScreen(
+            onFinished: () => Get.offAll(() => DashboardScreen()),
+          ));
+        } else {
+          Get.offAll(() => DashboardScreen());
+        }
       } else {
         Get.offAll(() => ActivationScreen());
       }
